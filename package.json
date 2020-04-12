@@ -1,0 +1,44 @@
+{
+  "name": "@hsborges/github-proxy-server",
+  "version": "0.1.0",
+  "main": "index.js",
+  "repository": "git@github.com:hsborges/github-proxy-server.git",
+  "author": "Hudson Silva Borges <hudsonsilbor@gmail.com>",
+  "license": "MIT",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "commit": "git-cz"
+  },
+  "bin": {
+    "github-proxy-server": "./index.js"
+  },
+  "dependencies": {
+    "body": "^5.1.0",
+    "body-parser": "^1.19.0",
+    "bottleneck": "^2.19.5",
+    "cli-progress": "^3.7.0",
+    "commander": "^5.0.0",
+    "compression": "^1.7.4",
+    "debug": "^4.1.1",
+    "express": "^4.17.1",
+    "helmet": "^3.22.0",
+    "http-proxy-middleware": "^1.0.3",
+    "lodash": "^4.17.15"
+  },
+  "devDependencies": {
+    "commitizen": "^4.0.4",
+    "cz-conventional-changelog": "3.1.0",
+    "eslint": "^6.8.0",
+    "eslint-config-airbnb-base": "^14.1.0",
+    "eslint-config-prettier": "^6.10.1",
+    "eslint-plugin-import": "^2.20.2",
+    "eslint-plugin-prettier": "^3.1.2",
+    "nodemon": "^2.0.3",
+    "prettier": "^2.0.4"
+  },
+  "config": {
+    "commitizen": {
+      "path": "./node_modules/cz-conventional-changelog"
+    }
+  }
+}
