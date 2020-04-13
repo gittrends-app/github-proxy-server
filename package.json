@@ -12,6 +12,9 @@
   "bin": {
     "github-proxy-server": "./index.js"
   },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org"
+  },
   "dependencies": {
     "body": "^5.1.0",
     "bottleneck": "^2.19.5",
