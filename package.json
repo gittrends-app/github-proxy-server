@@ -16,6 +16,7 @@
     "registry": "https://registry.npmjs.org"
   },
   "np": {
+    "yarn": true,
     "tests": false
   },
   "dependencies": {
