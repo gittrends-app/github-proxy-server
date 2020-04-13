@@ -1,6 +1,6 @@
 {
   "name": "@hsborges/github-proxy-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "index.js",
   "repository": "git@github.com:hsborges/github-proxy-server.git",
   "author": "Hudson Silva Borges <hudsonsilbor@gmail.com>",
