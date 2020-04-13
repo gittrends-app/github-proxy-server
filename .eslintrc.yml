@@ -14,3 +14,4 @@ parserOptions:
 rules:
   prettier/prettier: off
   no-param-reassign: off
+  no-console: off
