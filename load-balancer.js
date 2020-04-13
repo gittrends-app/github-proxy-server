@@ -49,7 +49,7 @@ module.exports = (
         debug('%o', {
           version,
           token: shortToken,
-          jobs: metadata[version].bottleneck.jobs().length,
+          queued: metadata[version].bottleneck.queued(),
           rateLimit: {
             remaining: metadata[version].remaining,
             reset: new Date(metadata[version].reset * 1000)
@@ -66,7 +66,7 @@ module.exports = (
       proxyTimeout: requestTimeout,
       followRedirects: true,
       logLevel: 'silent',
-      onProxyReq: (proxyReq, req) => {
+      onProxyReq(proxyReq, req) {
         req.headers.date = new Date();
         if (req.method === 'GET' && /^\/user\/?$/i.test(req.originalUrl))
           proxyReq.removeHeader('authorization');
@@ -78,8 +78,9 @@ module.exports = (
           proxyReq.write(bodyData);
         }
       },
-      onProxyRes: (proxyRes, req) => {
+      onProxyRes(proxyRes, req) {
         const version = req.path === '/graphql' ? 'graphql' : 'rest';
+        req.emit('finished');
         updateLimits(version, proxyRes.headers);
         log(version, proxyRes.statusCode, req.headers.date);
         Object.assign(proxyRes, {
@@ -91,6 +92,9 @@ module.exports = (
             'x-oauth-client-id'
           ])
         });
+      },
+      onError(err, req) {
+        req.emit('finished', err);
       }
     });
 
@@ -99,10 +103,10 @@ module.exports = (
       value.schedule = (req, res, next) =>
         bottleneck.schedule(
           () =>
-            new Promise((resolve, reject) => {
+            new Promise((resolve) => {
               apiProxy(req, res, next);
               req.on('close', resolve);
-              req.on('error', reject);
+              req.on('finished', resolve);
             })
         );
       value.jobs = () => bottleneck.jobs().length;
