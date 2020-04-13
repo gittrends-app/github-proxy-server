@@ -24,8 +24,7 @@ const tokensParser = (string) =>
 
 // function to concat tokens in commander
 const concatTokens = (token, list) => {
-  if (token.length !== 40)
-    throw new Error('Github access tokens have 40 characters');
+  if (token.length !== 40) throw new Error('Github access tokens have 40 characters');
   return uniq([...list, token]);
 };
 
@@ -42,14 +41,14 @@ program
   .option('-p, --port <port>', 'Port to start the proxy server', 3000)
   .option('-t, --token <token>', 'GitHub token to be used', concatTokens, [])
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
-  .option('--request-interval <interval>', 'Interval between requests (ms)', 100)
-  .option('--request-timeout <timeout>', 'Request timeout (ms)', 15000)
-  .option('--min-remaining <number>', 'Stop using token on', 100)
+  .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 100)
+  .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 15000)
+  .option('--min-remaining <number>', 'Stop using token on', Number, 100)
   .parse(process.argv);
 
 if (!program.token.length && !(program.tokens && program.tokens.length)) {
-  process.stderr.write(`${program.helpInformation()}\n`);
-  process.stderr.write(`Arguments missing (see "--token" and "--tokens").\n\n`);
+  console.error(`${program.helpInformation()}\n`);
+  console.error(`Arguments missing (see "--token" and "--tokens").\n\n`);
   process.exit(1);
 }
 
@@ -95,13 +94,10 @@ app.post('/graphql', balancer.graphql);
 app.get('/*', balancer.rest);
 
 app.all('/*', (req, res) =>
-  res
-    .status(501)
-    .json({ message: 'Only GET requests are supported by the proxy server' })
+  res.status(501).json({ message: 'Only GET requests are supported by the proxy server' })
 );
 
 app.listen(program.port, () => {
-  process.stdout.write(
-    `Proxy server running on ${program.port} (tokens: ${tokens.length})\n`
-  );
+  console.log(`Proxy server running on ${program.port} (tokens: ${tokens.length})`);
+  console.log(`Options: %o`, options);
 });
