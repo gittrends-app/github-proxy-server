@@ -31,7 +31,7 @@ const concatTokens = (token, list) => {
 
 // function to read tokens from a file
 const getTokens = (filename) => {
-  const filepath = path.resolve(__dirname, filename);
+  const filepath = path.resolve(process.cwd(), filename);
   if (!fs.existsSync(filepath)) throw new Error(`File "${filename}" not found!`);
   const tokens = tokensParser(fs.readFileSync(filepath, 'utf8'));
   return tokens.reduce((acc, token) => concatTokens(token, acc), []);
