@@ -96,7 +96,15 @@ module.exports = (
 
     each(metadata, (value) => {
       const { bottleneck } = value;
-      value.schedule = (...args) => bottleneck.schedule(() => apiProxy(...args));
+      value.schedule = (req, res, next) =>
+        bottleneck.schedule(
+          () =>
+            new Promise((resolve, reject) => {
+              apiProxy(req, res, next);
+              req.on('close', resolve);
+              req.on('error', reject);
+            })
+        );
       value.jobs = () => bottleneck.jobs().length;
       value.queued = () => bottleneck.queued();
     });
