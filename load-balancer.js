@@ -41,6 +41,7 @@ module.exports = (
     const updateLimits = (version, headers) => {
       if (!headers['x-ratelimit-remaining']) return;
       if (/401/i.test(headers.status)) {
+        console.log(headers);
         if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
           metadata[version].remaining = 0;
           metadata[version].limit = 0;
@@ -77,11 +78,7 @@ module.exports = (
       logLevel: 'silent',
       onProxyReq(proxyReq, req) {
         req.started_at = new Date();
-        if (req.method === 'GET' && /^\/user\/?$/i.test(req.originalUrl))
-          proxyReq.removeHeader('authorization');
-        if (req.method === 'POST' && /^\/graphql\/?$/i.test(req.originalUrl)) {
-          if (/viewer(.|\s)*{(.|\s)+}/i.test(req.body.query))
-            proxyReq.removeHeader('authorization');
+        if (req.method === 'POST') {
           const bodyData = JSON.stringify(req.body);
           proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
           proxyReq.write(bodyData);
