@@ -1,11 +1,10 @@
 /* Author: Hudson S. Borges */
+const moment = require('moment');
 const Bottleneck = require('bottleneck');
 const debug = require('debug')('github-proxy');
 
 const { chain, omit, each, cloneDeep } = require('lodash');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-
-const fakeReset = () => Math.floor(Date.now() / 1000) + 60 * 60;
 
 module.exports = (
   tokens = [],
@@ -18,27 +17,28 @@ module.exports = (
     const metadata = {
       rest: {
         remaining: 5000,
-        reset: fakeReset(),
+        reset: moment().add(1, 'hour').unix(),
         bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: requestInterval })
       },
       graphql: {
         remaining: 5000,
-        reset: fakeReset(),
+        reset: moment().add(1, 'hour').unix(),
         bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: requestInterval })
       }
     };
 
     setInterval(() => {
       each(metadata, (value) => {
-        if (value.reset && Math.floor(Date.now() / 1000) > value.reset) {
+        if (!value.reset || !moment.unix(value.reset).isAfter(Date.now())) {
           debug(`Rate limit reseted for ${shortToken}`);
           value.remaining = 5000;
-          value.reset = fakeReset();
+          value.reset = moment().add(1, 'hour').unix();
         }
       });
     }, 5000);
 
     const updateLimits = (version, headers) => {
+      if (!headers['x-ratelimit-remaining']) return;
       metadata[version].remaining = parseInt(headers['x-ratelimit-remaining'], 10);
       metadata[version].limit = parseInt(headers['x-ratelimit-limit'], 10);
       metadata[version].reset = parseInt(headers['x-ratelimit-reset'], 10);
@@ -47,13 +47,11 @@ module.exports = (
     const log = (version, status, startedAt) => {
       if (debug.enabled)
         debug('%o', {
-          version,
+          _v: version,
           token: shortToken,
           queued: metadata[version].bottleneck.queued(),
-          rateLimit: {
-            remaining: metadata[version].remaining,
-            reset: new Date(metadata[version].reset * 1000)
-          },
+          remaining: metadata[version].remaining,
+          reset: moment.unix(metadata[version].reset).fromNow(),
           status,
           duration: `${(Date.now() - startedAt) / 1000}s`
         });
@@ -80,7 +78,6 @@ module.exports = (
       },
       onProxyRes(proxyRes, req) {
         const version = req.path === '/graphql' ? 'graphql' : 'rest';
-        req.emit('finished');
         updateLimits(version, proxyRes.headers);
         log(version, proxyRes.statusCode, req.headers.date);
         Object.assign(proxyRes, {
@@ -92,9 +89,12 @@ module.exports = (
             'x-oauth-client-id'
           ])
         });
+        req.resolve();
       },
-      onError(err, req) {
-        req.emit('finished', err);
+      onError(err, req, res) {
+        req.reject(err);
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Something went wrong. And we are reporting a custom error message.');
       }
     });
 
@@ -104,9 +104,9 @@ module.exports = (
         bottleneck.schedule(
           () =>
             new Promise((resolve) => {
+              req.resolve = resolve;
+              req.reject = resolve;
               apiProxy(req, res, next);
-              req.on('close', resolve);
-              req.on('finished', resolve);
             })
         );
       value.jobs = () => bottleneck.jobs().length;

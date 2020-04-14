@@ -3,8 +3,9 @@
 /* Author: Hudson S. Borges */
 const fs = require('fs');
 const path = require('path');
-const helmet = require('helmet');
-const express = require('express');
+const polka = require('polka');
+const send = require('@polka/send-type');
+const bodyParser = require('body-parser');
 const compression = require('compression');
 const cliProgress = require('cli-progress');
 
@@ -84,17 +85,15 @@ if (!debug.enabled && process.stderr.isTTY) {
 }
 
 // start proxy server
-const app = express();
+const app = polka();
 
 app.use(compression());
-app.use(helmet());
-app.use(express.json());
+app.use(bodyParser.json());
 
 app.post('/graphql', balancer.graphql);
 app.get('/*', balancer.rest);
-
 app.all('/*', (req, res) =>
-  res.status(501).json({ message: 'Only GET requests are supported by the proxy server' })
+  send(res, 501, { message: 'Only GET requests are supported by the proxy server' })
 );
 
 app.listen(program.port, () => {
