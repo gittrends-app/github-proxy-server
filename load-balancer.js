@@ -129,7 +129,7 @@ module.exports = (
     const client = chain(clients)
       .filter((c) => c[version].remaining - c[version].jobs() > minRemaining)
       .shuffle()
-      .minBy((c) => c[version].queued())
+      .minBy((c) => c[version].jobs())
       .value();
 
     if (!client)
