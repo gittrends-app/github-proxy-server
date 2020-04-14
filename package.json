@@ -21,16 +21,18 @@
     "tests": false
   },
   "dependencies": {
-    "body": "^5.1.0",
+    "@polka/send-type": "^0.5.2",
+    "body-parser": "^1.19.0",
     "bottleneck": "^2.19.5",
     "cli-progress": "^3.7.0",
     "commander": "^5.0.0",
     "compression": "^1.7.4",
     "debug": "^4.1.1",
     "express": "^4.17.1",
-    "helmet": "^3.22.0",
     "http-proxy-middleware": "^1.0.3",
-    "lodash": "^4.17.15"
+    "lodash": "^4.17.15",
+    "moment": "^2.24.0",
+    "polka": "^0.5.2"
   },
   "devDependencies": {
     "commitizen": "^4.0.4",
