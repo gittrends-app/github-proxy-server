@@ -1,6 +1,7 @@
 /* Author: Hudson S. Borges */
 const moment = require('moment');
 const Bottleneck = require('bottleneck');
+const send = require('@polka/send-type');
 const debug = require('debug')('github-proxy');
 
 const { chain, omit, each, cloneDeep } = require('lodash');
@@ -39,9 +40,19 @@ module.exports = (
 
     const updateLimits = (version, headers) => {
       if (!headers['x-ratelimit-remaining']) return;
-      metadata[version].remaining = parseInt(headers['x-ratelimit-remaining'], 10);
-      metadata[version].limit = parseInt(headers['x-ratelimit-limit'], 10);
-      metadata[version].reset = parseInt(headers['x-ratelimit-reset'], 10);
+      if (/401/i.test(headers.status)) {
+        if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
+          metadata[version].remaining = 0;
+          metadata[version].limit = 0;
+          metadata[version].reset = moment().add(24, 'hours').unix();
+        } else {
+          metadata[version].remaining -= 1;
+        }
+      } else {
+        metadata[version].remaining = parseInt(headers['x-ratelimit-remaining'], 10);
+        metadata[version].limit = parseInt(headers['x-ratelimit-limit'], 10);
+        metadata[version].reset = parseInt(headers['x-ratelimit-reset'], 10);
+      }
     };
 
     const log = (version, status, startedAt) => {
@@ -65,7 +76,7 @@ module.exports = (
       followRedirects: true,
       logLevel: 'silent',
       onProxyReq(proxyReq, req) {
-        req.headers.date = new Date();
+        req.started_at = new Date();
         if (req.method === 'GET' && /^\/user\/?$/i.test(req.originalUrl))
           proxyReq.removeHeader('authorization');
         if (req.method === 'POST' && /^\/graphql\/?$/i.test(req.originalUrl)) {
@@ -77,9 +88,10 @@ module.exports = (
         }
       },
       onProxyRes(proxyRes, req) {
+        req.resolve();
         const version = req.path === '/graphql' ? 'graphql' : 'rest';
         updateLimits(version, proxyRes.headers);
-        log(version, proxyRes.statusCode, req.headers.date);
+        log(version, proxyRes.statusCode, req.started_at);
         Object.assign(proxyRes, {
           headers: omit(proxyRes.headers, [
             'x-ratelimit-limit',
@@ -89,7 +101,6 @@ module.exports = (
             'x-oauth-client-id'
           ])
         });
-        req.resolve();
       },
       onError(err, req, res) {
         req.reject(err);
@@ -125,7 +136,7 @@ module.exports = (
       .value();
 
     if (!client)
-      return res.status(503).json({
+      return send(res, 503, {
         message: 'Proxy Server: no requests available',
         reset: chain(clients)
           .minBy((c) => c[version].reset)
@@ -133,10 +144,22 @@ module.exports = (
           .value()
       });
 
+    const requiresUserInformation =
+      // rest api
+      (req.method === 'GET' && /^\/user\/?$/i.test(req.originalUrl)) ||
+      // graphql api
+      (req.method === 'POST' &&
+        /^\/graphql\/?$/i.test(req.originalUrl) &&
+        /\Wviewer(.|\s)*{(.|\s)+}/i.test(req.body.query));
+
+    if (requiresUserInformation)
+      return send(res, 401, {
+        message: 'Proxy Server: you cannot request information of the logged user.'
+      });
+
     return client[version].schedule(req, res, next);
   }
 
-  // express config
   return {
     get clients() {
       return clients.map((c) => cloneDeep(omit(c, ['bottleneck', 'schedule'])));
