@@ -59,8 +59,7 @@ module.exports = (
     const log = (version, status, startedAt) => {
       if (debug.enabled)
         debug('%o', {
-          _v: version,
-          token: shortToken,
+          [version]: shortToken,
           queued: metadata[version].bottleneck.queued(),
           remaining: metadata[version].remaining,
           reset: moment.unix(metadata[version].reset).fromNow(),
@@ -85,7 +84,7 @@ module.exports = (
         }
       },
       onProxyRes(proxyRes, req) {
-        req.resolve();
+        if (req.resolve) req.resolve();
         const version = req.path === '/graphql' ? 'graphql' : 'rest';
         updateLimits(version, proxyRes.headers);
         log(version, proxyRes.statusCode, req.started_at);
@@ -100,7 +99,7 @@ module.exports = (
         });
       },
       onError(err, req, res) {
-        req.reject(err);
+        if (req.reject) req.reject(err);
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Something went wrong. And we are reporting a custom error message.');
       }
@@ -108,15 +107,18 @@ module.exports = (
 
     each(metadata, (value) => {
       const { bottleneck } = value;
-      value.schedule = (req, res, next) =>
+      value.schedule = (req, res, next) => {
+        req.on('close', () => (req.closed = true));
         bottleneck.schedule(
           () =>
             new Promise((resolve) => {
               req.resolve = resolve;
               req.reject = resolve;
-              apiProxy(req, res, next);
+              if (req.closed) return resolve();
+              return apiProxy(req, res, next);
             })
         );
+      };
       value.jobs = () => bottleneck.jobs().length;
       value.queued = () => bottleneck.queued();
     });
