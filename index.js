@@ -3,13 +3,14 @@
 /* Author: Hudson S. Borges */
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const polka = require('polka');
 const send = require('@polka/send-type');
 const bodyParser = require('body-parser');
 const compression = require('compression');
 const cliProgress = require('cli-progress');
 
-const { uniq, pick } = require('lodash');
+const { uniq, pick, compact } = require('lodash');
 const { program } = require('commander');
 
 const debug = require('debug')('github-proxy');
@@ -54,49 +55,70 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
 }
 
 // create the load balancer
-const tokens = [...program.token, ...(program.tokens || [])];
-const options = pick(program, ['requestInterval', 'requestTimeout', 'minRemaining']);
-const balancer = loadBalancer(tokens, options);
+(async () => {
+  const tokens = compact(
+    await Promise.all(
+      [...program.token, ...(program.tokens || [])].map(
+        (token) =>
+          new Promise((resolve) =>
+            https.get(
+              'https://api.github.com/user',
+              {
+                headers: {
+                  authorization: `token ${token}`,
+                  'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
+                }
+              },
+              ({ statusCode }) => resolve(statusCode === 200 ? token : null)
+            )
+          )
+      )
+    )
+  );
 
-// create progress bars
-if (!debug.enabled && process.stderr.isTTY) {
-  const multibar = new cliProgress.MultiBar({
-    format: '{version} |{bar}| {value} remaining | {queued} queued',
-    barCompleteChar: '\u2588',
-    barIncompleteChar: '\u2591',
-    clearOnComplete: false,
-    hideCursor: true,
-    formatValue: (v) =>
-      `${v}`.padStart(Math.floor(Math.log10(balancer.clients.length * 5000)))
+  const options = pick(program, ['requestInterval', 'requestTimeout', 'minRemaining']);
+  const balancer = loadBalancer(tokens, options);
+
+  // create progress bars
+  if (!debug.enabled && process.stderr.isTTY) {
+    const multibar = new cliProgress.MultiBar({
+      format: '{version} |{bar}| {value} remaining | {queued} queued',
+      barCompleteChar: '\u2588',
+      barIncompleteChar: '\u2591',
+      clearOnComplete: false,
+      hideCursor: true,
+      formatValue: (v) =>
+        `${v}`.padStart(Math.floor(Math.log10(balancer.clients.length * 5000)))
+    });
+
+    ['rest', 'graphql'].forEach((api) => {
+      const bar = multibar.create();
+      bar.start(0, 0, { version: api.padStart(7), queued: 0 });
+
+      setInterval(() => {
+        const { clients } = balancer;
+        const rem = clients.reduce((a, c) => a + c[api].remaining, 0);
+        const queued = clients.reduce((a, c) => a + c[api].queued(), 0);
+        bar.update(rem, { queued });
+        bar.setTotal(clients.reduce((a, c) => a + c[api].limit, 0));
+      }, 500);
+    });
+  }
+
+  // start proxy server
+  const app = polka();
+
+  app.use(compression());
+  app.use(bodyParser.json());
+
+  app.post('/graphql', balancer.graphql);
+  app.get('/*', balancer.rest);
+  app.all('/*', (req, res) =>
+    send(res, 501, { message: 'Only GET requests are supported by the proxy server' })
+  );
+
+  app.listen(program.port, () => {
+    console.log(`Proxy server running on ${program.port} (tokens: ${tokens.length})`);
+    console.log(`Options: %o`, options);
   });
-
-  ['rest', 'graphql'].forEach((api) => {
-    const bar = multibar.create();
-    bar.start(0, 0, { version: api.padStart(7), queued: 0 });
-
-    setInterval(() => {
-      const { clients } = balancer;
-      const rem = clients.reduce((a, c) => a + c[api].remaining, 0);
-      const queued = clients.reduce((a, c) => a + c[api].queued(), 0);
-      bar.update(rem, { queued });
-      bar.setTotal(clients.reduce((a, c) => a + c[api].limit, 0));
-    }, 500);
-  });
-}
-
-// start proxy server
-const app = polka();
-
-app.use(compression());
-app.use(bodyParser.json());
-
-app.post('/graphql', balancer.graphql);
-app.get('/*', balancer.rest);
-app.all('/*', (req, res) =>
-  send(res, 501, { message: 'Only GET requests are supported by the proxy server' })
-);
-
-app.listen(program.port, () => {
-  console.log(`Proxy server running on ${program.port} (tokens: ${tokens.length})`);
-  console.log(`Options: %o`, options);
-});
+})();
