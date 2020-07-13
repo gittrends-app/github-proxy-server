@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const polka = require('polka');
+const consola = require('consola');
 const send = require('@polka/send-type');
 const bodyParser = require('body-parser');
 const compression = require('compression');
@@ -13,8 +14,8 @@ const cliProgress = require('cli-progress');
 const { uniq, pick, compact } = require('lodash');
 const { program } = require('commander');
 
-const debug = require('debug')('github-proxy');
 const loadBalancer = require('./load-balancer.js');
+const formatter = require('./helpers/formatter');
 
 // function to parse tokens from the input
 const tokensParser = (string) =>
@@ -46,11 +47,12 @@ program
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 100)
   .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 15000)
   .option('--min-remaining <number>', 'Stop using token on', Number, 100)
+  .option('--verbose', 'Enable verbose mode')
   .parse(process.argv);
 
 if (!program.token.length && !(program.tokens && program.tokens.length)) {
-  console.error(`${program.helpInformation()}\n`);
-  console.error(`Arguments missing (see "--token" and "--tokens").\n\n`);
+  consola.info(`${program.helpInformation()}`);
+  consola.error(`Arguments missing (see "--token" and "--tokens").\n\n`);
   process.exit(1);
 }
 
@@ -76,11 +78,13 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
     )
   );
 
-  const options = pick(program, ['requestInterval', 'requestTimeout', 'minRemaining']);
-  const balancer = loadBalancer(tokens, options);
+  const balancer = loadBalancer(
+    tokens,
+    pick(program, ['requestInterval', 'requestTimeout', 'minRemaining', 'verbose'])
+  );
 
   // create progress bars
-  if (!debug.enabled && process.stderr.isTTY) {
+  if (!program.verbose && process.stderr.isTTY) {
     const multibar = new cliProgress.MultiBar({
       format: '{version} |{bar}| {value} remaining | {queued} queued',
       barCompleteChar: '\u2588',
@@ -118,7 +122,11 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   );
 
   app.listen(program.port, () => {
-    console.log(`Proxy server running on ${program.port} (tokens: ${tokens.length})`);
-    console.log(`Options: %o`, options);
+    consola.success(`Proxy server running on ${program.port} (tokens: ${tokens.length})`);
+    consola.success(
+      `Options: ${formatter.object(
+        pick(program, ['requestInterval', 'requestTimeout', 'minRemaining', 'verbose'])
+      )}`
+    );
   });
 })();

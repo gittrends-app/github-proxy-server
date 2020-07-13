@@ -1,15 +1,22 @@
 /* Author: Hudson S. Borges */
 const moment = require('moment');
+const consola = require('consola');
 const Bottleneck = require('bottleneck');
 const send = require('@polka/send-type');
-const debug = require('debug')('github-proxy');
 
 const { chain, omit, each, cloneDeep } = require('lodash');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
+const formatter = require('./helpers/formatter');
+
 module.exports = (
   tokens = [],
-  { requestInterval = 100, requestTimeout = 15000, minRemaining = 100 } = {}
+  {
+    requestInterval = 100,
+    requestTimeout = 15000,
+    minRemaining = 100,
+    verbose = false
+  } = {}
 ) => {
   // prepare clients
   const clients = tokens.map((token) => {
@@ -31,7 +38,7 @@ module.exports = (
     setInterval(() => {
       each(metadata, (value) => {
         if (!value.reset || !moment.unix(value.reset).isAfter(Date.now())) {
-          debug(`Rate limit reseted for ${shortToken}`);
+          consola.info(`Rate limit reseted for ${shortToken}`);
           value.remaining = 5000;
           value.reset = moment().add(1, 'hour').unix();
         }
@@ -41,7 +48,6 @@ module.exports = (
     const updateLimits = (version, headers) => {
       if (!headers['x-ratelimit-remaining']) return;
       if (/401/i.test(headers.status)) {
-        console.log(headers);
         if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
           metadata[version].remaining = 0;
           metadata[version].limit = 0;
@@ -57,15 +63,20 @@ module.exports = (
     };
 
     const log = (version, status, startedAt) => {
-      if (debug.enabled)
-        debug('%o', {
-          [version]: shortToken,
-          queued: metadata[version].bottleneck.queued(),
-          remaining: metadata[version].remaining,
-          reset: moment.unix(metadata[version].reset).fromNow(),
-          status,
-          duration: `${(Date.now() - startedAt) / 1000}s`
-        });
+      if (verbose)
+        consola.info(
+          formatter.object(
+            {
+              [version]: shortToken,
+              queued: metadata[version].bottleneck.queued(),
+              remaining: metadata[version].remaining,
+              reset: moment.unix(metadata[version].reset).fromNow(),
+              status,
+              duration: `${(Date.now() - startedAt) / 1000}s`
+            },
+            { color: /[45]\d{2}/i.test(status) ? 'redBright' : 'green' }
+          )
+        );
     };
 
     const apiProxy = createProxyMiddleware({

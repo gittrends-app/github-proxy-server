@@ -15,4 +15,3 @@ rules:
   prettier/prettier: 0
   no-param-reassign: 0
   no-return-assign: [2, except-parens]
-  no-console: 0
