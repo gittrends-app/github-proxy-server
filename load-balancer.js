@@ -83,6 +83,7 @@ module.exports = (
       target: 'https://api.github.com',
       changeOrigin: true,
       headers: { authorization: `token ${token}` },
+      timeout: requestTimeout,
       proxyTimeout: requestTimeout,
       followRedirects: true,
       logLevel: 'silent',
