@@ -1,6 +1,7 @@
 /* Author: Hudson S. Borges */
 const moment = require('moment');
 const consola = require('consola');
+const Promise = require('bluebird');
 const Bottleneck = require('bottleneck');
 const send = require('@polka/send-type');
 
@@ -26,12 +27,20 @@ module.exports = (
       rest: {
         remaining: 5000,
         reset: moment().add(1, 'hour').unix(),
-        bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: requestInterval })
+        bottleneck: new Bottleneck({
+          maxConcurrent: 1,
+          minTime: requestInterval,
+          Promise
+        })
       },
       graphql: {
         remaining: 5000,
         reset: moment().add(1, 'hour').unix(),
-        bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: requestInterval })
+        bottleneck: new Bottleneck({
+          maxConcurrent: 1,
+          minTime: requestInterval,
+          Promise
+        })
       }
     };
 
@@ -96,7 +105,6 @@ module.exports = (
         }
       },
       onProxyRes(proxyRes, req) {
-        if (req.resolve) req.resolve();
         const version = req.path === '/graphql' ? 'graphql' : 'rest';
         updateLimits(version, proxyRes.headers);
         log(version, proxyRes.statusCode, req.started_at);
@@ -111,7 +119,6 @@ module.exports = (
         });
       },
       onError(err, req, res) {
-        if (req.reject) req.reject(err);
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Something went wrong. And we are reporting a custom error message.');
       }
@@ -119,16 +126,16 @@ module.exports = (
 
     each(metadata, (value) => {
       const { bottleneck } = value;
-      value.schedule = (req, res, next) => {
+      value.schedule = async (req, res, next) => {
         req.on('close', () => (req.closed = true));
-        bottleneck.schedule(
-          () =>
-            new Promise((resolve) => {
-              req.resolve = resolve;
-              req.reject = resolve;
-              if (req.closed) return resolve();
-              return apiProxy(req, res, next);
-            })
+        return bottleneck.schedule(() =>
+          new Promise((resolve) => {
+            if (req.closed) return resolve();
+            res.on('close', resolve);
+            return apiProxy(req, res, next);
+          })
+            .timeout(requestTimeout)
+            .catch(() => null)
         );
       };
       value.jobs = () => bottleneck.jobs().length;
