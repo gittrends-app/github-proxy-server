@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+global.Promise = require('bluebird');
 
 /* Author: Hudson S. Borges */
 const fs = require('fs');
@@ -14,7 +15,7 @@ const cliProgress = require('cli-progress');
 const { uniq, pick, compact } = require('lodash');
 const { program } = require('commander');
 
-const loadBalancer = require('./load-balancer.js');
+const middleware = require('./middleware.js');
 const formatter = require('./helpers/formatter');
 
 // function to parse tokens from the input
@@ -78,10 +79,14 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
     )
   );
 
-  const balancer = loadBalancer(
-    tokens,
-    pick(program, ['requestInterval', 'requestTimeout', 'minRemaining', 'verbose'])
-  );
+  const options = pick(program, [
+    'requestInterval',
+    'requestTimeout',
+    'minRemaining',
+    'verbose'
+  ]);
+
+  const balancer = middleware(tokens, options);
 
   // create progress bars
   if (!program.verbose && process.stderr.isTTY) {
@@ -123,10 +128,17 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
 
   app.listen(program.port, () => {
     consola.success(`Proxy server running on ${program.port} (tokens: ${tokens.length})`);
-    consola.success(
-      `Options: ${formatter.object(
-        pick(program, ['requestInterval', 'requestTimeout', 'minRemaining', 'verbose'])
-      )}`
-    );
+    consola.success(`Options: ${formatter.object(options)}`);
+  });
+
+  process.on('SIGTERM', async () => {
+    consola.info('SIGTERM signal received: closing HTTP server');
+
+    app.server.close(() => {
+      consola.success('Server closed');
+      process.exit(0);
+    });
+
+    setTimeout(() => process.exit(1), 10 * 1000);
   });
 })();
