@@ -118,20 +118,22 @@ module.exports = (
           ])
         });
       },
-      // TODO - Testing needed
-      // onError(err, req, res) {
-      //   res.writeHead(500, { 'Content-Type': 'text/plain' });
-      //   res.end('Something went wrong. And we are reporting a custom error message.');
-      // }
+      onError(err, req, res) {
+        if (res.writableEnded || res.socket.destroyed) return;
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Something went wrong. And we are reporting a custom error message.');
+      }
     });
 
     each(metadata, (value) => {
       const { bottleneck } = value;
       value.schedule = async (req, res, next) => {
-        req.on('close', () => (req.closed = true));
         return bottleneck.schedule(() =>
           new Promise((resolve) => {
-            if (req.closed) return resolve();
+            if (req.socket.destroyed) {
+              consola.warn('Client disconnected before proxing request.');
+              return resolve();
+            }
             res.on('close', resolve);
             return apiProxy(req, res, next);
           })
