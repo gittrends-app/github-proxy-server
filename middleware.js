@@ -119,9 +119,13 @@ module.exports = (
         });
       },
       onError(err, req, res) {
-        if (res.writableEnded || res.socket.destroyed) return;
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Something went wrong. And we are reporting a custom error message.');
+        try {
+          if (res.writableEnded || res.socket.destroyed) return;
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Something went wrong. And we are reporting a custom error message.');
+        } catch (error) {
+          consola.error(error);
+        }
       }
     });
 
