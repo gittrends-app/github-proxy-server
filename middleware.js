@@ -5,7 +5,7 @@ const Promise = require('bluebird');
 const Bottleneck = require('bottleneck');
 const send = require('@polka/send-type');
 
-const { chain, omit, each, cloneDeep } = require('lodash');
+const { chain, omit, each, cloneDeep, shuffle } = require('lodash');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const formatter = require('./helpers/formatter');
@@ -20,41 +20,36 @@ module.exports = (
   } = {}
 ) => {
   // prepare clients
-  const clients = tokens.map((token) => {
+  let clients = tokens.map((token) => {
     const shortToken = token && token.substring(0, 4);
 
-    const metadata = {
-      rest: {
-        remaining: 5000,
-        reset: moment().add(1, 'hour').unix(),
-        bottleneck: new Bottleneck({
-          maxConcurrent: 1,
-          minTime: requestInterval,
-          Promise
-        })
-      },
-      graphql: {
-        remaining: 5000,
-        reset: moment().add(1, 'hour').unix(),
-        bottleneck: new Bottleneck({
-          maxConcurrent: 1,
-          minTime: requestInterval,
-          Promise
-        })
-      }
-    };
+    const metadata = ['rest', 'graphql'].reduce(
+      (obj, t) => ({
+        ...obj,
+        [t]: {
+          remaining: 5000,
+          reset: moment().add(1, 'hour').unix(),
+          bottleneck: new Bottleneck({
+            maxConcurrent: 1,
+            minTime: requestInterval,
+            Promise
+          })
+        }
+      }),
+      {}
+    );
 
     setInterval(() => {
       each(metadata, (value) => {
         if (!value.reset || !moment.unix(value.reset).isAfter(Date.now())) {
-          consola.info(`Rate limit reseted for ${shortToken}`);
+          consola.debug(`Rate limit reseted for ${shortToken}`);
           value.remaining = 5000;
           value.reset = moment().add(1, 'hour').unix();
         }
       });
     }, 5000);
 
-    const updateLimits = (version, headers) => {
+    const updateLimits = async (version, headers) => {
       if (!headers['x-ratelimit-remaining']) return;
       if (/401/i.test(headers.status)) {
         if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
@@ -71,7 +66,7 @@ module.exports = (
       }
     };
 
-    const log = (version, status, startedAt) => {
+    const log = async (version, status, startedAt) => {
       if (verbose)
         consola.info(
           formatter.object(
@@ -95,6 +90,7 @@ module.exports = (
       timeout: requestTimeout,
       proxyTimeout: requestTimeout,
       followRedirects: true,
+      preserveHeaderKeyCase: true,
       logLevel: 'silent',
       onProxyReq(proxyReq, req) {
         req.started_at = new Date();
@@ -139,6 +135,8 @@ module.exports = (
               return resolve();
             }
             res.on('close', resolve);
+            res.on('finish', resolve);
+            res.on('error', resolve);
             return apiProxy(req, res, next);
           })
             .timeout(requestTimeout)
@@ -152,11 +150,13 @@ module.exports = (
     return metadata;
   });
 
+  // shuffle client to avoid requests concentration
+  setInterval(() => (clients = shuffle(clients)), 15000);
+
   // function to select the best client and queue request
   function balancer(version, req, res, next) {
     const client = chain(clients)
       .filter((c) => c[version].remaining - c[version].jobs() > minRemaining)
-      .shuffle()
       .minBy((c) => c[version].jobs())
       .value();
 
