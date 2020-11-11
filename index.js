@@ -15,6 +15,7 @@ const cliProgress = require('cli-progress');
 const { uniq, pick, compact } = require('lodash');
 const { program } = require('commander');
 
+const { version } = require('./package.json');
 const middleware = require('./middleware.js');
 const formatter = require('./helpers/formatter');
 
@@ -49,6 +50,7 @@ program
   .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 15000)
   .option('--min-remaining <number>', 'Stop using token on', Number, 100)
   .option('--verbose', 'Enable verbose mode')
+  .version(version, '-v, --version', 'output the current version')
   .parse(process.argv);
 
 if (!program.token.length && !(program.tokens && program.tokens.length)) {
