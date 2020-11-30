@@ -25,7 +25,7 @@ let count = -1;
 
 module.exports = ({ api, token, queued, remaining, reset, status, duration }) => {
   // eslint-disable-next-line no-cond-assign
-  if (!(count = (count + 1) % 25)) {
+  if (!(count = (count + 1) % 250)) {
     stream.write(
       ['api', 'token', 'queued', 'remaining', 'reset', 'status', 'duration'].map((v) =>
         chalk.bold(v)
