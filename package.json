@@ -26,28 +26,26 @@
     "body-parser": "^1.19.0",
     "bottleneck": "^2.19.5",
     "chalk": "^4.1.0",
-    "cli-progress": "^3.8.2",
-    "commander": "^6.1.0",
+    "commander": "^6.2.0",
     "compression": "^1.7.4",
     "consola": "^2.15.0",
-    "debug": "^4.2.0",
-    "express": "^4.17.1",
+    "dayjs": "^1.9.6",
     "http-proxy-middleware": "^1.0.6",
     "lodash": "^4.17.20",
-    "moment": "^2.29.1",
-    "polka": "^0.5.2"
+    "polka": "^0.5.2",
+    "table": "^6.0.4"
   },
   "devDependencies": {
     "commitizen": "^4.2.2",
     "cz-conventional-changelog": "3.3.0",
-    "eslint": "^7.12.0",
-    "eslint-config-airbnb-base": "^14.2.0",
-    "eslint-config-prettier": "^6.14.0",
+    "eslint": "^7.14.0",
+    "eslint-config-airbnb-base": "^14.2.1",
+    "eslint-config-prettier": "^6.15.0",
     "eslint-plugin-import": "^2.22.1",
     "eslint-plugin-prettier": "^3.1.4",
     "nodemon": "^2.0.6",
-    "np": "^6.5.0",
-    "prettier": "^2.1.2"
+    "np": "^7.0.0",
+    "prettier": "^2.2.1"
   },
   "config": {
     "commitizen": {

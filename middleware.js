@@ -1,23 +1,17 @@
 /* Author: Hudson S. Borges */
-const moment = require('moment');
+const dayjs = require('dayjs');
 const consola = require('consola');
-const Promise = require('bluebird');
 const Bottleneck = require('bottleneck');
 const send = require('@polka/send-type');
 
 const { chain, omit, each, cloneDeep, shuffle } = require('lodash');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
-const formatter = require('./helpers/formatter');
+const logger = require('./helpers/logger');
 
 module.exports = (
   tokens = [],
-  {
-    requestInterval = 100,
-    requestTimeout = 15000,
-    minRemaining = 100,
-    verbose = false
-  } = {}
+  { requestInterval = 100, requestTimeout = 15000, minRemaining = 100 } = {}
 ) => {
   // prepare clients
   let clients = tokens.map((token) => {
@@ -28,12 +22,8 @@ module.exports = (
         ...obj,
         [t]: {
           remaining: 5000,
-          reset: moment().add(1, 'hour').unix(),
-          bottleneck: new Bottleneck({
-            maxConcurrent: 1,
-            minTime: requestInterval,
-            Promise
-          })
+          reset: dayjs().add(1, 'hour').unix(),
+          bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: requestInterval })
         }
       }),
       {}
@@ -41,21 +31,21 @@ module.exports = (
 
     setInterval(() => {
       each(metadata, (value) => {
-        if (!value.reset || !moment.unix(value.reset).isAfter(Date.now())) {
+        if (!value.reset || dayjs.unix(value.reset).isBefore()) {
           consola.debug(`Rate limit reseted for ${shortToken}`);
           value.remaining = 5000;
-          value.reset = moment().add(1, 'hour').unix();
+          value.reset = dayjs().add(1, 'hour').unix();
         }
       });
     }, 5000);
 
-    const updateLimits = async (version, headers) => {
+    function updateLimits(version, headers) {
       if (!headers['x-ratelimit-remaining']) return;
       if (/401/i.test(headers.status)) {
         if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
           metadata[version].remaining = 0;
           metadata[version].limit = 0;
-          metadata[version].reset = moment().add(24, 'hours').unix();
+          metadata[version].reset = dayjs().add(24, 'hours').unix();
         } else {
           metadata[version].remaining -= 1;
         }
@@ -64,24 +54,19 @@ module.exports = (
         metadata[version].limit = parseInt(headers['x-ratelimit-limit'], 10);
         metadata[version].reset = parseInt(headers['x-ratelimit-reset'], 10);
       }
-    };
+    }
 
-    const log = async (version, status, startedAt) => {
-      if (verbose)
-        consola.info(
-          formatter.object(
-            {
-              [version]: shortToken,
-              queued: metadata[version].bottleneck.queued(),
-              remaining: metadata[version].remaining,
-              reset: moment.unix(metadata[version].reset).fromNow(),
-              status,
-              duration: `${(Date.now() - startedAt) / 1000}s`
-            },
-            { color: /[45]\d{2}/i.test(status) ? 'redBright' : 'green' }
-          )
-        );
-    };
+    function log(version, status, startedAt) {
+      logger({
+        api: version,
+        token: shortToken,
+        remaining: metadata[version].remaining,
+        queued: metadata[version].bottleneck.queued(),
+        reset: metadata[version].reset,
+        status,
+        duration: Date.now() - startedAt
+      });
+    }
 
     const apiProxy = createProxyMiddleware({
       target: 'https://api.github.com',
