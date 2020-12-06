@@ -1,13 +1,17 @@
 /* Author: Hudson S. Borges */
+const async = require('async');
 const dayjs = require('dayjs');
 const consola = require('consola');
-const Bottleneck = require('bottleneck');
 const send = require('@polka/send-type');
 
-const { chain, omit, each, cloneDeep, shuffle } = require('lodash');
+const { chain, omit, each, shuffle } = require('lodash');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const logger = require('./helpers/logger');
+
+async function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 module.exports = (
   tokens = [],
@@ -20,11 +24,7 @@ module.exports = (
     const metadata = ['rest', 'graphql'].reduce(
       (obj, t) => ({
         ...obj,
-        [t]: {
-          remaining: 5000,
-          reset: dayjs().add(1, 'hour').unix(),
-          bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: requestInterval })
-        }
+        [t]: { remaining: 5000, reset: dayjs().add(1, 'hour').unix() }
       }),
       {}
     );
@@ -61,7 +61,7 @@ module.exports = (
         api: version,
         token: shortToken,
         remaining: metadata[version].remaining,
-        queued: metadata[version].bottleneck.queued(),
+        queued: metadata[version].queue.length(),
         reset: metadata[version].reset,
         status,
         duration: Date.now() - startedAt
@@ -111,9 +111,8 @@ module.exports = (
     });
 
     each(metadata, (value) => {
-      const { bottleneck } = value;
-      value.schedule = async (req, res, next) => {
-        return bottleneck.schedule(() =>
+      value.queue = async.queue(
+        async ({ req, res, next }) =>
           new Promise((resolve) => {
             if (req.socket.destroyed) {
               consola.warn('Client disconnected before proxing request.');
@@ -124,12 +123,12 @@ module.exports = (
             res.on('error', resolve);
             return apiProxy(req, res, next);
           })
-            .timeout(requestTimeout)
-            .catch(() => null)
-        );
-      };
-      value.jobs = () => bottleneck.jobs().length;
-      value.queued = () => bottleneck.queued();
+            .timetout(requestTimeout)
+            .finally(() => wait(requestInterval)),
+        1
+      );
+      value.schedule = (req, res, next) => value.queue.push({ req, res, next });
+      value.queued = () => value.queue.length();
     });
 
     return metadata;
@@ -141,8 +140,8 @@ module.exports = (
   // function to select the best client and queue request
   function balancer(version, req, res, next) {
     const client = chain(clients)
-      .filter((c) => c[version].remaining - c[version].jobs() > minRemaining)
-      .minBy((c) => c[version].jobs())
+      .filter((c) => c[version].remaining - c[version].queued() > minRemaining)
+      .minBy((c) => c[version].queued())
       .value();
 
     if (!client)
@@ -171,9 +170,6 @@ module.exports = (
   }
 
   return {
-    get clients() {
-      return clients.map((c) => cloneDeep(omit(c, ['bottleneck', 'schedule'])));
-    },
     graphql: (...args) => balancer('graphql', ...args),
     rest: (...args) => balancer('rest', ...args)
   };

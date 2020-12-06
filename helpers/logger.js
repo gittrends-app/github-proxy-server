@@ -13,7 +13,7 @@ const stream = createStream({
     0: { width: 8 },
     1: { width: 6 },
     2: { width: 6 },
-    4: { width: 15 },
+    4: { width: 16 },
     5: { width: 6 }
   },
   drawHorizontalLine: (index) => index === 0,
