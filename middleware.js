@@ -111,22 +111,18 @@ module.exports = (
     });
 
     each(metadata, (value) => {
-      value.queue = async.queue(
-        async ({ req, res, next }) =>
-          new Promise((resolve) => {
-            if (req.socket.destroyed) {
-              consola.warn('Client disconnected before proxing request.');
-              return resolve();
-            }
-            res.on('close', resolve);
-            res.on('finish', resolve);
-            res.on('error', resolve);
-            return apiProxy(req, res, next);
-          })
-            .timetout(requestTimeout)
-            .finally(() => wait(requestInterval)),
-        1
-      );
+      const worker = async.timeout(({ req, res, next }, callback) => {
+        if (req.socket.destroyed) {
+          consola.warn('Client disconnected before proxing request.');
+          callback();
+        } else {
+          res.on('close', () => wait(requestInterval).then(callback));
+          res.on('error', () => wait(requestInterval).then(callback));
+          apiProxy(req, res, next);
+        }
+      }, requestTimeout);
+
+      value.queue = async.queue(worker, 1);
       value.schedule = (req, res, next) => value.queue.push({ req, res, next });
       value.queued = () => value.queue.length();
     });
