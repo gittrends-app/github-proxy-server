@@ -4,10 +4,9 @@ const dayjs = require('dayjs');
 const consola = require('consola');
 const send = require('@polka/send-type');
 
+const { Readable } = require('stream');
 const { chain, omit, each, shuffle } = require('lodash');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-
-const logger = require('./helpers/logger');
 
 async function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -17,6 +16,9 @@ module.exports = (
   tokens = [],
   { requestInterval = 100, requestTimeout = 15000, minRemaining = 100 } = {}
 ) => {
+  // create stream
+  const stream = new Readable({ objectMode: true, read() {} });
+
   // prepare clients
   let clients = tokens.map((token) => {
     const shortToken = token && token.substring(0, 4);
@@ -39,7 +41,7 @@ module.exports = (
       });
     }, 5000);
 
-    function updateLimits(version, headers) {
+    async function updateLimits(version, headers) {
       if (!headers['x-ratelimit-remaining']) return;
       if (/401/i.test(headers.status)) {
         if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
@@ -56,8 +58,8 @@ module.exports = (
       }
     }
 
-    function log(version, status, startedAt) {
-      logger({
+    async function log(version, status, startedAt) {
+      stream.push({
         api: version,
         token: shortToken,
         remaining: metadata[version].remaining,
@@ -167,8 +169,8 @@ module.exports = (
     return client[version].schedule(req, res, next);
   }
 
-  return {
-    graphql: (...args) => balancer('graphql', ...args),
-    rest: (...args) => balancer('rest', ...args)
-  };
+  stream.graphql = (...args) => balancer('graphql', ...args);
+  stream.rest = (...args) => balancer('rest', ...args);
+
+  return stream;
 };

@@ -2,6 +2,8 @@
 const chalk = require('chalk');
 const dayjs = require('dayjs');
 const relativeTime = require('dayjs/plugin/relativeTime');
+
+const { Writable } = require('stream');
 const { createStream, getBorderCharacters } = require('table');
 
 dayjs.extend(relativeTime);
@@ -21,25 +23,30 @@ const stream = createStream({
   border: getBorderCharacters('void')
 });
 
-let count = -1;
+let started = false;
 
-module.exports = ({ api, token, queued, remaining, reset, status, duration }) => {
-  // eslint-disable-next-line no-cond-assign
-  if (!(count = (count + 1) % 250)) {
-    stream.write(
-      ['api', 'token', 'queued', 'remaining', 'reset', 'status', 'duration'].map((v) =>
-        chalk.bold(v)
-      )
-    );
+module.exports = new Writable({
+  objectMode: true,
+  write({ api, token, queued, remaining, reset, status, duration }, encoding, done) {
+    if (!started) {
+      started = true;
+      stream.write(
+        ['api', 'token', 'queued', 'remaining', 'reset', 'status', 'duration'].map((v) =>
+          chalk.bold(v)
+        )
+      );
+    }
+
+    stream.write([
+      api,
+      token,
+      queued,
+      remaining,
+      dayjs.unix(reset).fromNow(),
+      chalk[/[45]\d{2}/i.test(status) ? 'redBright' : 'green'](status),
+      `${duration / 1000}s`
+    ]);
+
+    done();
   }
-
-  stream.write([
-    api,
-    token,
-    queued,
-    remaining,
-    dayjs.unix(reset).fromNow(),
-    chalk[/[45]\d{2}/i.test(status) ? 'redBright' : 'green'](status),
-    `${duration / 1000}s`
-  ]);
-};
+});
