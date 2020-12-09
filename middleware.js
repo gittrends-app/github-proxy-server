@@ -137,7 +137,7 @@ module.exports = (
   function balancer(version, req, res, next) {
     const client = chain(clients)
       .filter((c) => c[version].remaining - c[version].queued() > minRemaining)
-      .minBy((c) => c[version].queued())
+      .minBy((c) => c[version].running() + c[version].queued())
       .value();
 
     if (!client)
