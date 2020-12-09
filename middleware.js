@@ -124,7 +124,6 @@ module.exports = (
 
       value.queue = async.queue(worker, 1);
       value.schedule = (req, res, next) => value.queue.push({ req, res, next });
-      value.queued = () => value.queue.length();
     });
 
     return metadata;
@@ -136,8 +135,8 @@ module.exports = (
   // function to select the best client and queue request
   function balancer(version, req, res, next) {
     const client = chain(clients)
-      .filter((c) => c[version].remaining - c[version].queued() > minRemaining)
-      .minBy((c) => c[version].running() + c[version].queued())
+      .filter((c) => c[version].remaining - c[version].queue.length() > minRemaining)
+      .minBy((c) => c[version].queue.running() + c[version].queue.length())
       .value();
 
     if (!client)
