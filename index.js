@@ -15,7 +15,8 @@ const { uniq, pick, compact } = require('lodash');
 const { existsSync, readFileSync } = require('fs');
 
 const { version } = require('./package.json');
-const middleware = require('./middleware.js');
+const middleware = require('./middleware');
+const logger = require('./helpers/logger');
 
 // function to parse tokens from the input
 const tokensParser = (string) =>
@@ -85,10 +86,10 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
     'verbose'
   ]);
 
+  const app = polka();
   const balancer = middleware(tokens, options);
 
-  // start proxy server
-  const app = polka();
+  balancer.pipe(logger);
 
   app.use(compression());
   app.use(bodyParser.json());
