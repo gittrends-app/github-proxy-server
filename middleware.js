@@ -61,7 +61,7 @@ module.exports = (
         api: version,
         token: shortToken,
         remaining: metadata[version].remaining,
-        queued: metadata[version].queue.length(),
+        queued: metadata[version].queued(),
         reset: metadata[version].reset,
         status,
         duration: Date.now() - startedAt
@@ -122,21 +122,24 @@ module.exports = (
         }
       }, requestTimeout);
 
-      value.queue = async.queue(worker, 1);
-      value.schedule = (req, res, next) => value.queue.push({ req, res, next });
+      const queue = async.queue(worker, 1);
+
+      value.schedule = (req, res, next) => queue.push({ req, res, next });
+      value.queued = queue.length.bind(queue);
+      value.running = queue.running.bind(queue);
     });
 
     return metadata;
   });
 
   // shuffle client to avoid requests concentration
-  setInterval(() => (clients = shuffle(clients)), 15000);
+  setInterval(() => (clients = shuffle(clients)), 5000);
 
   // function to select the best client and queue request
   function balancer(version, req, res, next) {
     const client = chain(clients)
-      .filter((c) => c[version].remaining - c[version].queue.length() > minRemaining)
-      .minBy((c) => c[version].queue.running() + c[version].queue.length())
+      .filter((c) => c[version].remaining - c[version].queued() > minRemaining)
+      .minBy((c) => c[version].running() + c[version].queued())
       .value();
 
     if (!client)
