@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-global.Promise = require('bluebird');
-
 /* Author: Hudson S. Borges */
+const cors = require('cors');
 const https = require('https');
 const polka = require('polka');
+const helmet = require('helmet');
 const consola = require('consola');
-const send = require('@polka/send-type');
 const bodyParser = require('body-parser');
 const compression = require('compression');
+const responseTime = require('response-time');
 
 const { resolve } = require('path');
 const { program } = require('commander');
@@ -17,6 +17,7 @@ const { existsSync, readFileSync } = require('fs');
 const { version } = require('./package.json');
 const middleware = require('./middleware');
 const logger = require('./helpers/logger');
+const send = require('./helpers/send');
 
 // function to parse tokens from the input
 const tokensParser = (string) =>
@@ -91,14 +92,17 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
 
   balancer.pipe(logger);
 
+  app.use(cors());
+  app.use(helmet());
   app.use(compression());
+  app.use(responseTime());
   app.use(bodyParser.json());
 
   app.post('/graphql', balancer.graphql);
   app.get('/*', balancer.rest);
-  app.all('/*', (req, res) =>
-    send(res, 501, { message: 'Only GET requests are supported by the proxy server' })
-  );
+  app.all('/*', (req, res) => {
+    send(res, 401, { message: 'Only GET requests are supported by the server.' });
+  });
 
   app.listen(program.port, () => {
     consola.success(`Proxy server running on ${program.port} (tokens: ${tokens.length})`);
