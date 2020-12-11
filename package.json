@@ -27,6 +27,7 @@
     "chalk": "^4.1.0",
     "commander": "^6.2.0",
     "compression": "^1.7.4",
+    "connect-timeout": "^1.9.0",
     "consola": "^2.15.0",
     "cors": "^2.8.5",
     "dayjs": "^1.9.6",

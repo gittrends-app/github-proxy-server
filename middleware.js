@@ -119,6 +119,11 @@ module.exports = (
     each(metadata, (value) => {
       const queue = async.queue(
         async.timeout(({ req, res }, callback) => {
+          if (req.timedout) {
+            consola.warn('Request timeout achived.');
+            return callback();
+          }
+
           if (req.socket.destroyed) {
             consola.warn('Client disconnected before proxing request.');
             return callback();
