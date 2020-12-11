@@ -1,12 +1,13 @@
 /* Author: Hudson S. Borges */
 const async = require('async');
 const dayjs = require('dayjs');
+const axios = require('axios');
 const consola = require('consola');
-const send = require('@polka/send-type');
 
 const { Readable } = require('stream');
 const { chain, omit, each, shuffle } = require('lodash');
-const { createProxyMiddleware } = require('http-proxy-middleware');
+
+const send = require('./helpers/send');
 
 async function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -70,63 +71,67 @@ module.exports = (
       });
     }
 
-    const apiProxy = createProxyMiddleware({
-      target: 'https://api.github.com',
-      changeOrigin: true,
-      headers: { authorization: `token ${token}` },
+    const client = axios.create({
+      baseURL: 'https://api.github.com',
       timeout: requestTimeout,
-      proxyTimeout: requestTimeout,
-      followRedirects: true,
-      preserveHeaderKeyCase: true,
-      logLevel: 'silent',
-      onProxyReq(proxyReq, req) {
-        req.started_at = new Date();
-        if (req.method === 'POST') {
-          const bodyData = JSON.stringify(req.body);
-          proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-          proxyReq.write(bodyData);
-        }
-      },
-      onProxyRes(proxyRes, req) {
-        const version = req.path === '/graphql' ? 'graphql' : 'rest';
-        updateLimits(version, proxyRes.headers);
-        log(version, proxyRes.statusCode, req.started_at);
-        Object.assign(proxyRes, {
-          headers: omit(proxyRes.headers, [
-            'x-ratelimit-limit',
-            'x-ratelimit-remaining',
-            'x-ratelimit-reset',
-            'x-oauth-scopes',
-            'x-oauth-client-id'
-          ])
-        });
-      },
-      onError(err, req, res) {
-        try {
-          if (res.writableEnded || res.socket.destroyed) return;
-          res.writeHead(500, { 'Content-Type': 'text/plain' });
-          res.end('Something went wrong. And we are reporting a custom error message.');
-        } catch (error) {
-          consola.error(error);
-        }
+      headers: {
+        authorization: `token ${token}`,
+        'accept-encoding': 'gzip'
       }
     });
 
+    client.interceptors.request.use((config) => ({ ...config, started_at: new Date() }));
+
+    client.interceptors.response.use((response) => {
+      const version = response.request.path === '/graphql' ? 'graphql' : 'rest';
+      updateLimits(version, response.headers);
+      log(version, response.status, response.config.started_at);
+      return response;
+    });
+
+    async function apiProxy(req, res) {
+      return client
+        .request({
+          method: req.method,
+          url: req.url,
+          headers: omit(req.headers, ['host', 'connection', 'content-length']),
+          data: req.body
+        })
+        .then(async (response) => {
+          if (req.socket.destroyed)
+            return consola.warn('Client disconnected after proxing request.');
+
+          const compress = req.headers['accept-encoding'] === 'gzip';
+          const headers = response.headers['access-control-expose-headers']
+            .split(',')
+            .reduce((acc, h) => {
+              const key = h.trim().toLowerCase();
+              const value = response.headers[key];
+              return !value || /(ratelimit|scopes)/gi.test(key)
+                ? acc
+                : { ...acc, [key]: value };
+            }, {});
+
+          return send(res, response.status, response.data, { headers, compress });
+        });
+    }
+
     each(metadata, (value) => {
-      const worker = async.timeout(({ req, res, next }, callback) => {
-        if (req.socket.destroyed) {
-          consola.warn('Client disconnected before proxing request.');
-          callback();
-        } else {
-          res.on('close', () => wait(requestInterval).then(callback));
-          res.on('error', () => wait(requestInterval).then(callback));
-          apiProxy(req, res, next);
-        }
-      }, requestTimeout);
+      const queue = async.queue(
+        async.timeout(({ req, res }, callback) => {
+          if (req.socket.destroyed) {
+            consola.warn('Client disconnected before proxing request.');
+            return callback();
+          }
 
-      const queue = async.queue(worker, 1);
+          return apiProxy(req, res)
+            .then(() => wait(requestInterval))
+            .finally(callback);
+        }, requestTimeout),
+        1
+      );
 
-      value.schedule = (req, res, next) => queue.push({ req, res, next });
+      value.schedule = (req, res, next) => queue.push({ req, res }, next);
       value.queued = queue.length.bind(queue);
       value.running = queue.running.bind(queue);
     });
@@ -144,14 +149,15 @@ module.exports = (
       .minBy((c) => c[version].running() + c[version].queued())
       .value();
 
-    if (!client)
+    if (!client) {
       return send(res, 503, {
         message: 'Proxy Server: no requests available',
         reset: chain(clients)
           .minBy((c) => c[version].reset)
           .get([version, 'reset'])
           .value()
-      });
+      }).finally(next);
+    }
 
     const requiresUserInformation =
       // rest api
@@ -161,10 +167,11 @@ module.exports = (
         /^\/graphql\/?$/i.test(req.originalUrl) &&
         /\Wviewer(.|\s)*{(.|\s)+}/i.test(req.body.query));
 
-    if (requiresUserInformation)
+    if (requiresUserInformation) {
       return send(res, 401, {
-        message: 'Proxy Server: you cannot request information of the logged user.'
-      });
+        message: 'You cannot request information of the logged user.'
+      }).finally(next);
+    }
 
     return client[version].schedule(req, res, next);
   }
