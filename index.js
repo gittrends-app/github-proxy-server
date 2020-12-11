@@ -7,6 +7,7 @@ const helmet = require('helmet');
 const consola = require('consola');
 const bodyParser = require('body-parser');
 const compression = require('compression');
+const timeout = require('connect-timeout');
 const responseTime = require('response-time');
 
 const { resolve } = require('path');
@@ -80,12 +81,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
     )
   );
 
-  const options = pick(program, [
-    'requestInterval',
-    'requestTimeout',
-    'minRemaining',
-    'verbose'
-  ]);
+  const options = pick(program, ['requestInterval', 'minRemaining', 'verbose']);
 
   const app = polka();
   const balancer = middleware(tokens, options);
@@ -97,6 +93,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   app.use(compression());
   app.use(responseTime());
   app.use(bodyParser.json());
+  app.use(timeout(program.requestTimeout));
 
   app.post('/graphql', balancer.graphql);
   app.get('/*', balancer.rest);
