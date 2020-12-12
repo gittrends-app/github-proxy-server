@@ -16,7 +16,12 @@ module.exports = async function send(
   data,
   { headers, compress = false } = {}
 ) {
-  res.statusCode = statusCode;
+  if (!/^[1-5]\d{2}$/gi.test(statusCode))
+    throw new Error(
+      `Invalid status code !(status: ${statusCode}, data: ${JSON.stringify(data)})`
+    );
+
+  res.statusCode = parseInt(statusCode, 10);
 
   res.setHeader('content-type', 'application/json');
 
