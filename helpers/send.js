@@ -16,6 +16,8 @@ module.exports = async function send(
   data,
   { headers, compress = false } = {}
 ) {
+  if (res.writableEnded) throw new Error('Response has already been sent.');
+
   if (!/^[1-5]\d{2}$/gi.test(statusCode))
     throw new Error(
       `Invalid status code !(status: ${statusCode}, data: ${JSON.stringify(data)})`
