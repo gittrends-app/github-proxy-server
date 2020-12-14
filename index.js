@@ -93,7 +93,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   app.use(compression());
   app.use(responseTime());
   app.use(bodyParser.json());
-  app.use(timeout(program.requestTimeout));
+  app.use(timeout(`${program.requestTimeout / 1000}s`));
 
   app.post('/graphql', balancer.graphql);
   app.get('/*', balancer.rest);
