@@ -136,7 +136,12 @@ module.exports = (
         1
       );
 
-      value.schedule = (req, res, next) => queue.push({ req, res }, next);
+      value.schedule = (req, res, next) =>
+        queue.push({ req, res }, (err) => {
+          send(res, 500, { message: err.message });
+          next();
+        });
+
       value.queued = queue.length.bind(queue);
       value.running = queue.running.bind(queue);
     });
@@ -161,7 +166,7 @@ module.exports = (
           .minBy((c) => c[version].reset)
           .get([version, 'reset'])
           .value()
-      }).finally(next);
+      }).finally(() => next());
     }
 
     const requiresUserInformation =
@@ -175,7 +180,7 @@ module.exports = (
     if (requiresUserInformation) {
       return send(res, 401, {
         message: 'You cannot request information of the logged user.'
-      }).finally(next);
+      }).finally(() => next());
     }
 
     return client[version].schedule(req, res, next);
