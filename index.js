@@ -49,6 +49,7 @@ program
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 100)
   .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 15000)
+  .option('--connection-timeout <timeout>', 'Connection timeout (ms)', Number, 25000)
   .option('--min-remaining <number>', 'Stop using token on', Number, 100)
   .version(version, '-v, --version', 'output the current version')
   .parse();
@@ -81,7 +82,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
     )
   );
 
-  const options = pick(program, ['requestInterval', 'minRemaining', 'verbose']);
+  const options = pick(program, ['requestInterval', 'requestTimeout', 'minRemaining']);
 
   const app = polka();
   const balancer = middleware(tokens, options);
@@ -93,7 +94,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   app.use(compression());
   app.use(responseTime());
   app.use(bodyParser.json());
-  app.use(timeout(`${program.requestTimeout / 1000}s`));
+  app.use(timeout(`${program.connectionTimeout / 1000}s`));
 
   app.post('/graphql', balancer.graphql);
   app.get('/*', balancer.rest);

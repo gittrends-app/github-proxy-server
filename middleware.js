@@ -117,29 +117,26 @@ module.exports = (
     }
 
     each(metadata, (value) => {
-      const queue = async.queue(
-        async.timeout(({ req, res }, callback) => {
-          if (req.timedout) {
-            consola.warn('Request timeout achived.');
-            return callback(new Error('Request timedout'));
-          }
+      const queue = async.queue(({ req, res }, callback) => {
+        if (req.timedout) {
+          consola.warn('Request timeout achived.');
+          return callback(new Error('Request timedout'));
+        }
 
-          if (req.socket.destroyed) {
-            consola.warn('Client disconnected before proxing request.');
-            return callback(new Error('Client disconnected before proxing request'));
-          }
+        if (req.socket.destroyed) {
+          consola.warn('Client disconnected before proxing request.');
+          return callback(new Error('Client disconnected before proxing request'));
+        }
 
-          return apiProxy(req, res)
-            .then(() => wait(requestInterval))
-            .then(() => callback())
-            .catch((err) => callback(err));
-        }, requestTimeout),
-        1
-      );
+        return apiProxy(req, res)
+          .then(() => wait(requestInterval))
+          .then(() => callback())
+          .catch((err) => callback(err));
+      }, 1);
 
       value.schedule = (req, res, next) =>
         queue.push({ req, res }, (err) => {
-          if (err) send(res, 500, { message: err.message });
+          if (err) send(res, err.status || 500, { message: err.message });
           next();
         });
 
