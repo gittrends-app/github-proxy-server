@@ -121,17 +121,18 @@ module.exports = (
         async.timeout(({ req, res }, callback) => {
           if (req.timedout) {
             consola.warn('Request timeout achived.');
-            return callback();
+            return callback(new Error('Request timedout'));
           }
 
           if (req.socket.destroyed) {
             consola.warn('Client disconnected before proxing request.');
-            return callback();
+            return callback(new Error('Client disconnected before proxing request'));
           }
 
           return apiProxy(req, res)
             .then(() => wait(requestInterval))
-            .finally(callback);
+            .then(() => callback())
+            .catch((err) => callback(err));
         }, requestTimeout),
         1
       );
