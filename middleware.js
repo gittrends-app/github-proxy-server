@@ -138,7 +138,7 @@ module.exports = (
 
       value.schedule = (req, res, next) =>
         queue.push({ req, res }, (err) => {
-          send(res, 500, { message: err.message });
+          if (err) send(res, 500, { message: err.message });
           next();
         });
 
