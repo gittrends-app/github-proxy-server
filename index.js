@@ -44,7 +44,7 @@ const getTokens = (filename) => {
 
 // parse arguments from command line
 program
-  .option('-p, --port <port>', 'Port to start the proxy server', 3000)
+  .option('-p, --port <port>', 'Port to start the proxy server', process.env.PORT || 3000)
   .option('-t, --token <token>', 'GitHub token to be used', concatTokens, [])
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 100)
