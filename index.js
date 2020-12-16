@@ -21,12 +21,15 @@ const logger = require('./helpers/logger');
 const send = require('./helpers/send');
 
 // function to parse tokens from the input
-const tokensParser = (string) =>
-  string
-    .trim()
-    .replace(/\s+/gi, ' ')
-    .split(/[\s]/i)
-    .map((v) => v.replace(/.*:(.+)/i, '$1'));
+function tokensParser(string) {
+  return string
+    .split(/\n/g)
+    .map((v) => v.replace(/\s/g, ''))
+    .reduce((acc, v) => {
+      if (!v || /^(\/{2}|#).*/gi.test(v)) return acc;
+      return acc.concat([v.replace(/.*:(.+)/i, '$1')]);
+    }, []);
+}
 
 // function to concat tokens in commander
 const concatTokens = (token, list) => {
