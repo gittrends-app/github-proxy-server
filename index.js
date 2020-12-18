@@ -65,30 +65,29 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
 
 // create the load balancer
 (async () => {
-  const tokens = compact(
-    await Promise.all(
-      [...program.token, ...(program.tokens || [])].map(
-        (token) =>
-          new Promise((r) =>
-            https.get(
-              'https://api.github.com/user',
-              {
-                headers: {
-                  authorization: `token ${token}`,
-                  'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
-                }
-              },
-              ({ statusCode }) => r(statusCode === 200 ? token : null)
-            )
-          )
-      )
-    )
-  );
+  const tokens = compact([...program.token, ...(program.tokens || [])]);
 
   const options = pick(program, ['requestInterval', 'requestTimeout', 'minRemaining']);
 
   const app = polka();
   const balancer = middleware(tokens, options);
+
+  tokens.map((token) =>
+    https.get(
+      'https://api.github.com/user',
+      {
+        headers: {
+          authorization: `token ${token}`,
+          'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
+        }
+      },
+      ({ statusCode }) => {
+        if (statusCode === 200) return;
+        consola.error(`Invalid token (${token}) detected!`);
+        balancer.removeToken(token);
+      }
+    )
+  );
 
   balancer.pipe(logger);
 

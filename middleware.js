@@ -5,7 +5,7 @@ const axios = require('axios');
 const consola = require('consola');
 
 const { Readable } = require('stream');
-const { chain, omit, each, shuffle } = require('lodash');
+const { chain, omit, each } = require('lodash');
 
 const send = require('./helpers/send');
 
@@ -21,7 +21,7 @@ module.exports = (
   const stream = new Readable({ objectMode: true, read() {} });
 
   // prepare clients
-  let clients = tokens.map((token) => {
+  const clients = tokens.map((token) => {
     const shortToken = token && token.substring(0, 4);
 
     const metadata = ['rest', 'graphql'].reduce(
@@ -90,12 +90,17 @@ module.exports = (
     });
 
     async function apiProxy(req, res) {
+      const source = axios.CancelToken.source();
+
+      req.socket.on('close', () => source.cancel('Operation canceled by the user.'));
+
       return client
         .request({
           method: req.method,
           url: req.url,
           headers: omit(req.headers, ['host', 'connection', 'content-length']),
-          data: req.body
+          data: req.body,
+          cancelToken: source.token
         })
         .then(async (response) => {
           if (req.socket.destroyed)
@@ -119,12 +124,10 @@ module.exports = (
     each(metadata, (value) => {
       const queue = async.queue(({ req, res }, callback) => {
         if (req.timedout) {
-          consola.warn('Request timeout achived.');
           return callback(new Error('Request timedout'));
         }
 
         if (req.socket.destroyed) {
-          consola.warn('Client disconnected before proxing request.');
           return callback(new Error('Client disconnected before proxing request'));
         }
 
@@ -136,10 +139,15 @@ module.exports = (
 
       value.schedule = (req, res, next) =>
         queue.push({ req, res }, (err) => {
-          if (err) send(res, err.status || 500, { message: err.message });
+          if (err) {
+            consola.warn(err);
+            send(res, err.status || 500, { message: err.message });
+          }
+
           next();
         });
 
+      value.token = token;
       value.queued = queue.length.bind(queue);
       value.running = queue.running.bind(queue);
     });
@@ -147,13 +155,11 @@ module.exports = (
     return metadata;
   });
 
-  // shuffle client to avoid requests concentration
-  setInterval(() => (clients = shuffle(clients)), 5000);
-
   // function to select the best client and queue request
   function balancer(version, req, res, next) {
     const client = chain(clients)
       .filter((c) => c[version].remaining - c[version].queued() > minRemaining)
+      .shuffle()
       .minBy((c) => c[version].running() + c[version].queued())
       .value();
 
@@ -184,6 +190,8 @@ module.exports = (
     return client[version].schedule(req, res, next);
   }
 
+  stream.removeToken = (token) =>
+    clients.splice(clients.map((c) => c.token).indexOf(token), 1);
   stream.graphql = (...args) => balancer('graphql', ...args);
   stream.rest = (...args) => balancer('rest', ...args);
 
