@@ -77,7 +77,8 @@ module.exports = (
       headers: {
         authorization: `token ${token}`,
         'accept-encoding': 'gzip'
-      }
+      },
+      validateStatus: () => true
     });
 
     client.interceptors.request.use((config) => ({ ...config, started_at: new Date() }));
