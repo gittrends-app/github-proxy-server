@@ -95,7 +95,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   app.use(helmet());
   app.use(compression());
   app.use(responseTime());
-  app.use(bodyParser.json());
+  app.use(bodyParser.json({ limit: '500kb' }));
   app.use(timeout(`${program.connectionTimeout / 1000}s`, { respond: false }));
 
   app.post('/graphql', balancer.graphql);
