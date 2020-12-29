@@ -141,8 +141,11 @@ module.exports = (
       value.schedule = (req, res, next) =>
         queue.push({ req, res }, (err) => {
           if (err) {
-            consola.warn(err);
-            send(res, err.status || 500, { message: err.message });
+            consola.warn(err.message || err);
+            let statusCode = 500;
+            if (err.status) statusCode = err.status;
+            else if (err.code === 'ECONNABORTED') statusCode = 408;
+            send(res, statusCode, { message: err.message });
           }
 
           next();
@@ -159,12 +162,11 @@ module.exports = (
   // function to select the best client and queue request
   function balancer(version, req, res, next) {
     const client = chain(clients)
-      .filter((c) => c[version].remaining - c[version].queued() > minRemaining)
       .shuffle()
       .minBy((c) => c[version].running() + c[version].queued())
       .value();
 
-    if (!client) {
+    if (!client || client[version].remaining - client[version].queued() < minRemaining) {
       return send(res, 503, {
         message: 'Proxy Server: no requests available',
         reset: chain(clients)
