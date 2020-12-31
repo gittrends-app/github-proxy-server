@@ -1,11 +1,16 @@
+root: true
+parser: '@typescript-eslint/parser'
 env:
-  commonjs: true
   es6: true
   node: true
+plugins:
+  - '@typescript-eslint'
 extends:
-  - airbnb-base
+  - eslint:recommended
   - prettier
   - plugin:prettier/recommended
+  - plugin:@typescript-eslint/eslint-recommended
+  - plugin:@typescript-eslint/recommended
 globals:
   Atomics: readonly
   SharedArrayBuffer: readonly
