@@ -1,54 +1,65 @@
 #!/usr/bin/env node
 /* Author: Hudson S. Borges */
-const cors = require('cors');
-const https = require('https');
-const polka = require('polka');
-const helmet = require('helmet');
-const consola = require('consola');
-const bodyParser = require('body-parser');
-const compression = require('compression');
-const timeout = require('connect-timeout');
-const responseTime = require('response-time');
+import https from 'https';
+import consola from 'consola';
 
-const { resolve } = require('path');
-const { program } = require('commander');
-const { uniq, pick, compact } = require('lodash');
-const { existsSync, readFileSync } = require('fs');
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import bodyParser from 'body-parser';
+import compression from 'compression';
+import timeout from 'connect-timeout';
+import responseTime from 'response-time';
 
-const { version } = require('./package.json');
-const middleware = require('./middleware');
-const logger = require('./helpers/logger');
-const send = require('./helpers/send');
+import { resolve } from 'path';
+import { program } from 'commander';
+import { uniq, pick, compact } from 'lodash';
+import { existsSync, readFileSync } from 'fs';
+import { version } from './package.json';
 
-// function to parse tokens from the input
-function tokensParser(string) {
-  return string
+import Proxy from './middleware';
+import logger from './logger';
+
+// parse tokens from input
+function tokensParser(text: string): string[] {
+  return text
     .split(/\n/g)
     .map((v) => v.replace(/\s/g, ''))
-    .reduce((acc, v) => {
+    .reduce((acc: string[], v: string) => {
       if (!v || /^(\/{2}|#).*/gi.test(v)) return acc;
       return acc.concat([v.replace(/.*:(.+)/i, '$1')]);
     }, []);
 }
 
-// function to concat tokens in commander
-const concatTokens = (token, list) => {
+// concat tokens in commander
+function concatTokens(token: string, list: string[]): string[] {
   if (token.length !== 40) throw new Error('Github access tokens have 40 characters');
   return uniq([...list, token]);
-};
+}
 
-// function to read tokens from a file
-const getTokens = (filename) => {
+// read tokens from a file
+function getTokens(filename: string): string[] {
   const filepath = resolve(process.cwd(), filename);
   if (!existsSync(filepath)) throw new Error(`File "${filename}" not found!`);
   const tokens = tokensParser(readFileSync(filepath, 'utf8'));
-  return tokens.reduce((acc, token) => concatTokens(token, acc), []);
-};
+  return tokens.reduce((acc: string[], token: string) => concatTokens(token, acc), []);
+}
+
+enum APIVersion {
+  GraphQL = 'graphql',
+  REST = 'rest'
+}
 
 // parse arguments from command line
 program
-  .option('-p, --port <port>', 'Port to start the proxy server', process.env.PORT || 3000)
+  .option(
+    '-p, --port <port>',
+    'Port to start the proxy server',
+    Number,
+    parseInt(process.env.PORT || '3000', 10)
+  )
   .option('-t, --token <token>', 'GitHub token to be used', concatTokens, [])
+  .option('--api <api>', 'API version to proxy requests', APIVersion.GraphQL)
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 100)
   .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 15000)
@@ -69,8 +80,15 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
 
   const options = pick(program, ['requestInterval', 'requestTimeout', 'minRemaining']);
 
-  const app = polka();
-  const balancer = middleware(tokens, options);
+  const app = express();
+  app.use(cors());
+  app.use(helmet());
+  app.use(compression());
+  app.use(responseTime());
+  app.use(bodyParser.json({ limit: '500kb' }));
+  app.use(timeout(`${program.connectionTimeout / 1000}s`, { respond: false }));
+
+  const proxy = new Proxy(tokens, options);
 
   tokens.map((token) =>
     https.get(
@@ -84,32 +102,26 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
       ({ statusCode }) => {
         if (statusCode === 200) return;
         consola.error(`Invalid token (${token}) detected!`);
-        balancer.removeToken(token);
+        proxy.removeToken(token);
       }
     )
   );
 
-  balancer.pipe(logger);
+  proxy.pipe(logger);
 
-  app.use(cors());
-  app.use(helmet());
-  app.use(compression());
-  app.use(responseTime());
-  app.use(bodyParser.json({ limit: '500kb' }));
-  app.use(timeout(`${program.connectionTimeout / 1000}s`, { respond: false }));
+  if (program.api === APIVersion.GraphQL) app.post('/graphql', proxy.schedule.bind(proxy));
+  else if (program.api === APIVersion.REST) app.get('/*', proxy.schedule.bind(proxy));
 
-  app.post('/graphql', balancer.graphql);
-  app.get('/*', balancer.rest);
   app.all('/*', (req, res) => {
-    send(res, 401, { message: 'Only GET requests are supported by the server.' });
+    res.status(401).json({ message: `Endpoint not supported for "${program.api}" api.` });
   });
 
-  app.listen(program.port, () => {
+  const server = app.listen(program.port, () => {
     consola.success(`Proxy server running on ${program.port} (tokens: ${tokens.length})`);
     consola.success(
       `Options: %s`,
-      Object.keys(options)
-        .map((k) => `${k}: ${options[k]}`)
+      Object.entries(options)
+        .map(([k, v]) => `${k}: ${v}`)
         .join(', ')
     );
   });
@@ -117,7 +129,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   process.on('SIGTERM', async () => {
     consola.info('SIGTERM signal received: closing HTTP server');
 
-    app.server.close(() => {
+    server.close(() => {
       consola.success('Server closed');
       process.exit(0);
     });
