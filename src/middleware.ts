@@ -1,6 +1,5 @@
 /* Author: Hudson S. Borges */
 import dayjs from 'dayjs';
-import consola from 'consola';
 
 import { chain, min } from 'lodash';
 import { Readable, PassThrough } from 'stream';
@@ -64,8 +63,7 @@ class Client extends Readable {
             .join(', ');
         }
       },
-      logLevel: 'silent',
-      logProvider: () => consola
+      logLevel: 'silent'
     });
 
     this.queue = queue(({ req, res, next }, callback) => {
@@ -118,10 +116,7 @@ class Client extends Readable {
 
   schedule(req: Request, res: Response, next: NextFunction): void {
     return this.queue.push({ req, res, next }, (err) => {
-      if (err) {
-        consola.warn(err.message || err);
-        res.status(500).json({ message: err.message });
-      }
+      if (err) res.status(500).json({ message: err.message });
     });
   }
 
