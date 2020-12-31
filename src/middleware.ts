@@ -49,18 +49,20 @@ class Client extends Readable {
         this.updateLimits(proxyRes.headers as Record<string, string>);
         this.log(res.statusCode, dayjs(req.headers.started_at as string).toDate());
 
-        proxyRes.headers['access-control-expose-headers'] = (
-          proxyRes.headers['access-control-expose-headers'] || ''
-        )
-          .split(', ')
-          .filter((header) => {
-            if (/(ratelimit|scope)/i.test(header)) {
-              delete proxyRes.headers[header.toLowerCase()];
-              return false;
-            }
-            return true;
-          })
-          .join(', ');
+        if (!proxyRes.socket.destroyed) {
+          proxyRes.headers['access-control-expose-headers'] = (
+            proxyRes.headers['access-control-expose-headers'] || ''
+          )
+            .split(', ')
+            .filter((header) => {
+              if (/(ratelimit|scope)/i.test(header)) {
+                delete proxyRes.headers[header.toLowerCase()];
+                return false;
+              }
+              return true;
+            })
+            .join(', ');
+        }
       },
       logLevel: 'silent',
       logProvider: () => consola
