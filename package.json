@@ -11,7 +11,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "commit": "git-cz",
     "lint": "eslint . --ext .ts",
-    "build": "tsc"
+    "build": "rm -rf dist/* && tsc",
+    "prepublish": "rm -rf dist/* && tsc"
   },
   "bin": {
     "github-proxy-server": "./dist/index.js"
