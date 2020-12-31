@@ -46,7 +46,7 @@ class Client extends Readable {
         }
       },
       onProxyRes: (proxyRes, req, res) => {
-        this.updateLimits(res.getHeaders() as Record<string, string>);
+        this.updateLimits(proxyRes.headers as Record<string, string>);
         this.log(res.statusCode, dayjs(req.headers.started_at as string).toDate());
 
         proxyRes.headers['access-control-expose-headers'] = (
@@ -88,6 +88,19 @@ class Client extends Readable {
 
   updateLimits(headers: Record<string, string>): void {
     if (!headers['x-ratelimit-remaining']) return;
+    if (/401/i.test(headers.status)) {
+      if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
+        this.remaining = 0;
+        this.limit = 0;
+        this.reset = dayjs().add(24, 'hour').unix();
+      } else {
+        this.remaining -= 1;
+      }
+    } else {
+      this.remaining = parseInt(headers['x-ratelimit-remaining'], 10);
+      this.limit = parseInt(headers['x-ratelimit-limit'], 10);
+      this.reset = parseInt(headers['x-ratelimit-reset'], 10);
+    }
   }
 
   log(status: number, startedAt: Date): void {
