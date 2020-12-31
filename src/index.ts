@@ -2,6 +2,7 @@
 /* Author: Hudson S. Borges */
 import https from 'https';
 import consola from 'consola';
+import chalk from 'chalk';
 import { EventEmitter } from 'events';
 
 import express from 'express';
@@ -121,11 +122,14 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   });
 
   const server = app.listen(program.port, () => {
-    consola.success(`Proxy server running on ${program.port} (tokens: ${tokens.length})`);
     consola.success(
-      `Options: %s`,
-      Object.entries(options)
-        .map(([k, v]) => `${k}: ${v}`)
+      `Proxy server running on ${program.port} (tokens: ${chalk.greenBright(tokens.length)})`
+    );
+    consola.success(
+      `${chalk.bold('Options')}: %s`,
+      Object.entries({ ...options, ...pick(program, ['api', 'connectionTimeout']) })
+        .sort((a: string[], b: string[]) => (a[0] > b[0] ? 1 : -1))
+        .map(([k, v]) => `${k}: ${chalk.greenBright(v)}`)
         .join(', ')
     );
   });

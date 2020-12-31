@@ -1,7 +1,6 @@
 /* Author: Hudson S. Borges */
-import dayjs from 'dayjs';
+import shuffle from 'lodash/shuffle';
 
-import { chain, min } from 'lodash';
 import { Readable, PassThrough } from 'stream';
 import { queue, QueueObject } from 'async';
 import { Response, Request, NextFunction } from 'express';
@@ -26,7 +25,7 @@ class Client extends Readable {
     super({ objectMode: true, read: () => null });
     this.token = token;
     this.remaining = 5000;
-    this.reset = dayjs().add(1, 'hour').unix();
+    this.reset = Date.now() + 1000 * 60 * 60;
 
     this.middleware = createProxyMiddleware({
       target: 'https://api.github.com',
@@ -46,7 +45,7 @@ class Client extends Readable {
       },
       onProxyRes: (proxyRes, req, res) => {
         this.updateLimits(proxyRes.headers as Record<string, string>);
-        this.log(res.statusCode, dayjs(req.headers.started_at as string).toDate());
+        this.log(res.statusCode, new Date(req.headers.started_at as string));
 
         if (!proxyRes.socket.destroyed) {
           proxyRes.headers['access-control-expose-headers'] = (
@@ -92,7 +91,7 @@ class Client extends Readable {
       if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
         this.remaining = 0;
         this.limit = 0;
-        this.reset = dayjs().add(24, 'hour').unix();
+        this.reset = Date.now() + 1000 * 60 * 60;
       } else {
         this.remaining -= 1;
       }
@@ -127,6 +126,10 @@ class Client extends Readable {
   get running(): number {
     return this.queue.running();
   }
+
+  get totalRunning(): number {
+    return this.queued + this.running;
+  }
 }
 
 export default class Proxy extends PassThrough {
@@ -158,15 +161,19 @@ export default class Proxy extends PassThrough {
 
   // function to select the best client and queue request
   schedule(req: Request, res: Response, next: NextFunction): void {
-    const client = chain(this.clients)
-      .shuffle()
-      .minBy((client) => client.running + client.queued)
-      .value();
+    const client = shuffle(this.clients)
+      .filter((client) => client.remaining - client.totalRunning > this.minRemaining)
+      .reduce((lowest: Client | null, client) => {
+        if (!lowest) return client;
+        if (lowest.remaining - lowest.totalRunning < client.remaining - client.totalRunning)
+          return client;
+        return lowest;
+      }, null);
 
-    if (!client || client.remaining - client.queued < this.minRemaining) {
+    if (!client) {
       res.status(503).json({
         message: 'Proxy Server: no requests available',
-        reset: min(this.clients.map((client) => client.reset))
+        reset: Math.min(...this.clients.map((client) => client.reset))
       });
       return;
     }
