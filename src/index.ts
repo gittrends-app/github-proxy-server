@@ -2,6 +2,7 @@
 /* Author: Hudson S. Borges */
 import https from 'https';
 import consola from 'consola';
+import { EventEmitter } from 'events';
 
 import express from 'express';
 import cors from 'cors';
@@ -76,6 +77,9 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
 
 // create the load balancer
 (async () => {
+  // increase number os listeners
+  EventEmitter.defaultMaxListeners = Number.MAX_SAFE_INTEGER;
+
   const tokens = compact([...program.token, ...(program.tokens || [])]);
 
   const options = pick(program, ['requestInterval', 'requestTimeout', 'minRemaining']);
