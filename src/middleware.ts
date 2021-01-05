@@ -115,7 +115,7 @@ class Client extends Readable {
 
   schedule(req: Request, res: Response, next: NextFunction): void {
     return this.queue.push({ req, res, next }, (err) => {
-      if (err) res.status(500).json({ message: err.message });
+      if (err && !res.socket?.destroyed) res.status(500).json({ message: err.message });
     });
   }
 
