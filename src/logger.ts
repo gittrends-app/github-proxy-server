@@ -33,8 +33,6 @@ class Logger extends Writable {
         3: { width: 20 },
         4: { width: 6 }
       },
-      drawHorizontalLine: (index) => index === 0,
-      singleLine: true,
       border: getBorderCharacters('void')
     });
   }
