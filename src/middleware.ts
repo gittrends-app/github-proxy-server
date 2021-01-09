@@ -1,5 +1,6 @@
 /* Author: Hudson S. Borges */
 import shuffle from 'lodash/shuffle';
+import minBy from 'lodash/minBy';
 
 import { Readable, PassThrough } from 'stream';
 import { queue, QueueObject } from 'async';
@@ -39,8 +40,9 @@ class Client extends Readable {
         req.headers.started_at = new Date().toISOString();
       },
       onProxyRes: (proxyRes, req, res) => {
+        res.emit('done');
         this.updateLimits(proxyRes.headers as Record<string, string>);
-        this.log(res.statusCode, new Date(req.headers.started_at as string));
+        this.log(proxyRes.statusCode || 0, new Date(req.headers.started_at as string));
 
         if (!proxyRes.socket.destroyed) {
           proxyRes.headers['access-control-expose-headers'] = (
@@ -57,6 +59,10 @@ class Client extends Readable {
             .join(', ');
         }
       },
+      onError: (err, req, res) => {
+        req.emit('done', err);
+        this.log(res.statusCode, new Date(req.headers.started_at as string));
+      },
       logLevel: 'silent'
     });
 
@@ -70,11 +76,11 @@ class Client extends Readable {
       }
 
       return new Promise((resolve, reject) => {
-        res.on('close', resolve);
-        res.on('error', reject);
+        res.on('done', (err) =>
+          setTimeout(() => (err ? reject(err) : resolve(null)), opts?.requestInterval || 100)
+        );
         this.middleware(req, res, next);
       })
-        .then(() => new Promise((resolve) => setTimeout(resolve, opts?.requestInterval || 100)))
         .then(() => callback())
         .catch((err) => callback(err));
     }, 1);
@@ -156,16 +162,12 @@ export default class Proxy extends PassThrough {
 
   // function to select the best client and queue request
   schedule(req: Request, res: Response, next: NextFunction): void {
-    const client = shuffle(this.clients)
-      .filter((client) => client.remaining - client.totalRunning > this.minRemaining)
-      .reduce((lowest: Client | null, client) => {
-        if (!lowest) return client;
-        if (lowest.remaining - lowest.totalRunning < client.remaining - client.totalRunning)
-          return client;
-        return lowest;
-      }, null);
+    const client = minBy(
+      shuffle(this.clients),
+      (client) => client.totalRunning - client.remaining / 5000
+    );
 
-    if (!client) {
+    if (!client || client.remaining <= this.minRemaining) {
       res.status(503).json({
         message: 'Proxy Server: no requests available',
         reset: Math.min(...this.clients.map((client) => client.reset))
