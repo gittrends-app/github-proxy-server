@@ -37,11 +37,6 @@ class Client extends Readable {
       timeout: opts?.requestTimeout || 15000,
       onProxyReq(proxyReq, req) {
         req.headers.started_at = new Date().toISOString();
-        if (req.method.toLowerCase() === 'post') {
-          const buffer = Buffer.from(JSON.stringify(req.body));
-          proxyReq.setHeader('content-length', Buffer.byteLength(buffer));
-          proxyReq.end(buffer);
-        }
       },
       onProxyRes: (proxyRes, req, res) => {
         this.updateLimits(proxyRes.headers as Record<string, string>);
@@ -174,21 +169,6 @@ export default class Proxy extends PassThrough {
       res.status(503).json({
         message: 'Proxy Server: no requests available',
         reset: Math.min(...this.clients.map((client) => client.reset))
-      });
-      return;
-    }
-
-    const requiresUserInformation =
-      // rest api
-      (req.method === 'GET' && /^\/user\/?$/i.test(req.originalUrl)) ||
-      // graphql api
-      (req.method === 'POST' &&
-        /^\/graphql\/?$/i.test(req.originalUrl) &&
-        /\Wviewer(.|\s)*{(.|\s)+}/i.test(req.body.query));
-
-    if (requiresUserInformation) {
-      res.status(401).json({
-        message: 'You cannot request information of the logged user.'
       });
       return;
     }
