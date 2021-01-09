@@ -8,7 +8,6 @@ import { EventEmitter } from 'events';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import bodyParser from 'body-parser';
 import compression from 'compression';
 import timeout from 'connect-timeout';
 import responseTime from 'response-time';
@@ -90,7 +89,6 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   app.use(helmet());
   app.use(compression());
   app.use(responseTime());
-  app.use(bodyParser.json({ limit: '500kb' }));
   app.use(timeout(`${program.connectionTimeout / 1000}s`, { respond: false }));
 
   const proxy = new Proxy(tokens, options);
