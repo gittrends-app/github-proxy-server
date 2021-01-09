@@ -75,8 +75,8 @@ class Client extends Readable {
       }
 
       return new Promise((resolve, reject) => {
-        res.socket?.on('close', resolve);
-        res.socket?.on('error', reject);
+        res.on('close', resolve);
+        res.on('error', reject);
         this.middleware(req, res, next);
       })
         .then(() => new Promise((resolve) => setTimeout(resolve, opts?.requestInterval || 100)))
