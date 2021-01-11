@@ -3,7 +3,7 @@ import shuffle from 'lodash/shuffle';
 import minBy from 'lodash/minBy';
 
 import { Readable, PassThrough } from 'stream';
-import { queue, QueueObject } from 'async';
+import { AsyncWorker, queue, QueueObject, timeout } from 'async';
 import { Response, Request, NextFunction } from 'express';
 import { createProxyMiddleware, RequestHandler } from 'http-proxy-middleware';
 
@@ -35,14 +35,14 @@ class Client extends Readable {
         authorization: `token ${token}`,
         'accept-encoding': 'gzip'
       },
-      timeout: opts?.requestTimeout || 15000,
+      timeout: opts?.requestTimeout ?? 15000,
       onProxyReq(proxyReq, req) {
         req.headers.started_at = new Date().toISOString();
       },
       onProxyRes: (proxyRes, req, res) => {
         res.emit('done');
         this.updateLimits(proxyRes.headers as Record<string, string>);
-        this.log(proxyRes.statusCode || 0, new Date(req.headers.started_at as string));
+        this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
 
         if (!proxyRes.socket.destroyed) {
           proxyRes.headers['access-control-expose-headers'] = (
@@ -66,7 +66,7 @@ class Client extends Readable {
       logLevel: 'silent'
     });
 
-    this.queue = queue(({ req, res, next }, callback) => {
+    const worker: AsyncWorker<MiddlewareInterface> = ({ req, res, next }, callback) => {
       if (req.timedout) {
         return callback(new Error('Request timedout'));
       }
@@ -75,15 +75,20 @@ class Client extends Readable {
         return callback(new Error('Client disconnected before proxing request'));
       }
 
-      return new Promise((resolve, reject) => {
-        res.on('done', (err) =>
-          setTimeout(() => (err ? reject(err) : resolve(null)), opts?.requestInterval || 100)
-        );
-        this.middleware(req, res, next);
-      })
-        .then(() => callback())
-        .catch((err) => callback(err));
-    }, 1);
+      let resolved = false;
+      const resolve = (err: Error) => {
+        resolved = resolved || true;
+        if (!resolved)
+          setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval ?? 100);
+      };
+
+      res.on('done', resolve);
+      res.on('close', resolve);
+      res.socket?.on('close', resolve);
+      this.middleware(req, res, next);
+    };
+
+    this.queue = queue(timeout(worker, opts?.requestTimeout ?? 15000), 1);
   }
 
   updateLimits(headers: Record<string, string>): void {
@@ -116,7 +121,7 @@ class Client extends Readable {
 
   schedule(req: Request, res: Response, next: NextFunction): void {
     return this.queue.push({ req, res, next }, (err) => {
-      if (err && !res.socket?.destroyed) res.status(500).json({ message: err.message });
+      if (err && !res.headersSent) res.status(500).json({ message: err.message });
     });
   }
 
@@ -145,9 +150,9 @@ export default class Proxy extends PassThrough {
   ) {
     super({ objectMode: true });
 
-    this.requestInterval = opts?.requestInterval || 100;
-    this.requestTimeout = opts?.requestTimeout || 15000;
-    this.minRemaining = opts?.minRemaining || 100;
+    this.requestInterval = opts?.requestInterval ?? 100;
+    this.requestTimeout = opts?.requestTimeout ?? 15000;
+    this.minRemaining = opts?.minRemaining ?? 100;
 
     this.clients = tokens.map(
       (token) =>
