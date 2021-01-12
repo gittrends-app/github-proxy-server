@@ -3,7 +3,7 @@ import shuffle from 'lodash/shuffle';
 import minBy from 'lodash/minBy';
 
 import { Readable, PassThrough } from 'stream';
-import { AsyncWorker, queue, QueueObject, timeout } from 'async';
+import { queue, QueueObject } from 'async';
 import { Response, Request, NextFunction } from 'express';
 import { createProxyMiddleware, RequestHandler } from 'http-proxy-middleware';
 
@@ -39,8 +39,7 @@ class Client extends Readable {
       onProxyReq(proxyReq, req) {
         req.headers.started_at = new Date().toISOString();
       },
-      onProxyRes: (proxyRes, req, res) => {
-        res.emit('done');
+      onProxyRes: (proxyRes, req) => {
         this.updateLimits(proxyRes.headers as Record<string, string>);
         this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
 
@@ -60,35 +59,30 @@ class Client extends Readable {
         }
       },
       onError: (err, req, res) => {
-        req.emit('done', err);
         this.log(res.statusCode, new Date(req.headers.started_at as string));
       },
       logLevel: 'silent'
     });
 
-    const worker: AsyncWorker<MiddlewareInterface> = ({ req, res, next }, callback) => {
-      if (req.timedout) {
-        return callback(new Error('Request timedout'));
-      }
+    this.queue = queue(({ req, res, next }, callback) => {
+      if (req.timedout) callback(new Error('Request timedout'));
+      if (req.socket.destroyed) callback(new Error('Client disconnected before proxing request'));
 
-      if (req.socket.destroyed) {
-        return callback(new Error('Client disconnected before proxing request'));
-      }
-
-      let resolved = false;
-      const resolve = (err: Error) => {
-        resolved = resolved || true;
-        if (!resolved)
-          setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval ?? 100);
+      let callbackAlreadyCalled = false;
+      const finish = (err?: Error) => {
+        if (callbackAlreadyCalled) return;
+        if (err) console.error(err);
+        callbackAlreadyCalled = true;
+        return setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval ?? 100);
       };
 
-      res.on('done', resolve);
-      res.on('close', resolve);
-      res.socket?.on('close', resolve);
+      res.on('finish', finish);
+      res.on('close', finish);
+      res.on('error', finish);
+      req.socket?.on('close', finish);
+      req.socket?.on('end', finish);
       this.middleware(req, res, next);
-    };
-
-    this.queue = queue(timeout(worker, opts?.requestTimeout ?? 15000), 1);
+    }, 1);
   }
 
   updateLimits(headers: Record<string, string>): void {
