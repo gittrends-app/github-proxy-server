@@ -11,6 +11,7 @@ import helmet from 'helmet';
 import compression from 'compression';
 import timeout from 'connect-timeout';
 import responseTime from 'response-time';
+import statusMonitor from 'express-status-monitor';
 
 import { resolve } from 'path';
 import { program } from 'commander';
@@ -91,6 +92,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   ]);
 
   const app = express();
+  app.use(statusMonitor());
   app.use(cors());
   app.use(helmet());
   app.use(compression());
