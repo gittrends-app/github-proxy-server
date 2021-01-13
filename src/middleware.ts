@@ -22,7 +22,7 @@ class Client extends Readable {
   remaining: number;
   reset: number;
 
-  constructor(token: string, opts?: { requestTimeout: number; requestInterval: number }) {
+  constructor(token: string, opts?: { requestTimeout?: number; requestInterval?: number }) {
     super({ objectMode: true, read: () => null });
     this.token = token;
     this.remaining = 5000;
@@ -35,11 +35,12 @@ class Client extends Readable {
         authorization: `token ${token}`,
         'accept-encoding': 'gzip'
       },
-      timeout: opts?.requestTimeout ?? 15000,
+      timeout: opts?.requestTimeout ?? 30000,
       onProxyReq(proxyReq, req) {
         req.headers.started_at = new Date().toISOString();
       },
       onProxyRes: (proxyRes, req) => {
+        req.emit('done');
         this.updateLimits(proxyRes.headers as Record<string, string>);
         this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
 
@@ -59,30 +60,30 @@ class Client extends Readable {
         }
       },
       onError: (err, req, res) => {
+        req.emit('done', err);
         this.log(res.statusCode, new Date(req.headers.started_at as string));
       },
       logLevel: 'silent'
     });
 
-    this.queue = queue(({ req, res, next }, callback) => {
-      if (req.timedout) callback(new Error('Request timedout'));
-      if (req.socket.destroyed) callback(new Error('Client disconnected before proxing request'));
+    this.queue = queue(
+      ({ req, res, next }: MiddlewareInterface, callback: (err?: Error | undefined) => void) => {
+        if (req.timedout) {
+          return callback(new Error('Request timedout'));
+        }
 
-      let callbackAlreadyCalled = false;
-      const finish = (err?: Error) => {
-        if (callbackAlreadyCalled) return;
-        if (err) console.error(err);
-        callbackAlreadyCalled = true;
-        return setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval ?? 100);
-      };
+        if (req.socket.destroyed) {
+          return callback(new Error('Client disconnected before proxing request'));
+        }
 
-      res.on('finish', finish);
-      res.on('close', finish);
-      res.on('error', finish);
-      req.socket?.on('close', finish);
-      req.socket?.on('end', finish);
-      this.middleware(req, res, next);
-    }, 1);
+        req.on('done', (err?: Error) =>
+          setTimeout(() => callback(err), opts?.requestInterval || 100)
+        );
+
+        this.middleware(req, res, next);
+      },
+      1
+    );
   }
 
   updateLimits(headers: Record<string, string>): void {
@@ -134,8 +135,6 @@ class Client extends Readable {
 
 export default class Proxy extends PassThrough {
   private readonly clients: Client[];
-  private readonly requestInterval: number;
-  private readonly requestTimeout: number;
   private readonly minRemaining: number;
 
   constructor(
@@ -143,16 +142,13 @@ export default class Proxy extends PassThrough {
     opts?: { requestInterval?: number; requestTimeout?: number; minRemaining?: number }
   ) {
     super({ objectMode: true });
-
-    this.requestInterval = opts?.requestInterval ?? 100;
-    this.requestTimeout = opts?.requestTimeout ?? 15000;
     this.minRemaining = opts?.minRemaining ?? 100;
 
     this.clients = tokens.map(
       (token) =>
         new Client(token, {
-          requestInterval: this.requestInterval,
-          requestTimeout: this.requestTimeout
+          requestInterval: opts?.requestInterval,
+          requestTimeout: opts?.requestTimeout
         })
     );
 

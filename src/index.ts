@@ -63,7 +63,7 @@ program
   .option('--api <api>', 'API version to proxy requests', APIVersion.GraphQL)
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 100)
-  .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 15000)
+  .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 30000)
   .option('--connection-timeout <timeout>', 'Connection timeout (ms)', Number, 60000)
   .option('--min-remaining <number>', 'Stop using token on', Number, 100)
   .version(version, '-v, --version', 'output the current version')
@@ -82,7 +82,12 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
 
   const tokens = compact([...program.token, ...(program.tokens || [])]);
 
-  const options = pick(program, ['requestInterval', 'requestTimeout', 'minRemaining']);
+  const options = pick(program, [
+    'requestInterval',
+    'requestTimeout',
+    'connectionTimeout',
+    'minRemaining'
+  ]);
 
   const app = express();
   app.use(cors());
