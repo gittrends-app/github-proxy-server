@@ -7,7 +7,7 @@
   "author": "Hudson Silva Borges <hudsonsilbor@gmail.com>",
   "license": "MIT",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts -- ",
+    "dev": "ts-node -T src/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "commit": "git-cz",
     "lint": "eslint . --ext .ts",
@@ -64,7 +64,7 @@
     "eslint-plugin-prettier": "^3.3.1",
     "np": "^7.2.0",
     "prettier": "^2.2.1",
-    "ts-node-dev": "^1.1.1",
+    "ts-node": "^9.1.1",
     "typescript": "^4.1.3"
   },
   "config": {
