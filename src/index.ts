@@ -66,6 +66,7 @@ program
   .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 30000)
   .option('--connection-timeout <timeout>', 'Connection timeout (ms)', Number, 60000)
   .option('--min-remaining <number>', 'Stop using token on', Number, 100)
+  .option('--silent', 'Dont show requests outputs')
   .version(version, '-v, --version', 'output the current version')
   .parse();
 
@@ -115,7 +116,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
     )
   );
 
-  proxy.pipe(logger);
+  if (!program.silent) proxy.pipe(logger);
 
   if (program.api === APIVersion.GraphQL) app.post('/graphql', proxy.schedule.bind(proxy));
   else if (program.api === APIVersion.REST) app.get('/*', proxy.schedule.bind(proxy));
