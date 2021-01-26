@@ -66,24 +66,20 @@ class Client extends Readable {
       logLevel: 'silent'
     });
 
-    this.queue = queue(
-      ({ req, res, next }: MiddlewareInterface, callback: (err?: Error | undefined) => void) => {
-        if (req.timedout) {
-          return callback(new Error('Request timedout'));
-        }
+    this.queue = queue(({ req, res, next }: MiddlewareInterface, callback) => {
+      if (req.timedout) throw new Error('Request timedout');
+      if (req.socket.destroyed) throw new Error('Client disconnected before proxing request');
 
-        if (req.socket.destroyed) {
-          return callback(new Error('Client disconnected before proxing request'));
-        }
-
+      new Promise((resolve, reject) => {
         req.on('done', (err?: Error) =>
-          setTimeout(() => callback(err), opts?.requestInterval || 100)
+          setTimeout(() => (err ? reject(err) : resolve(true)), opts?.requestInterval || 100)
         );
 
         this.middleware(req, res, next);
-      },
-      1
-    );
+      })
+        .then(() => callback())
+        .catch((err) => callback(err));
+    }, 1);
   }
 
   updateLimits(headers: Record<string, string>): void {
@@ -115,7 +111,7 @@ class Client extends Readable {
   }
 
   schedule(req: Request, res: Response, next: NextFunction): void {
-    return this.queue.push({ req, res, next }, (err) => {
+    this.queue.push({ req, res, next }, (err) => {
       if (err && !res.headersSent) res.status(500).json({ message: err.message });
     });
   }
