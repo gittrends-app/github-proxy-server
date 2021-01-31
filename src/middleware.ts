@@ -40,24 +40,24 @@ class Client extends Readable {
         req.headers.started_at = new Date().toISOString();
       },
       onProxyRes: (proxyRes, req) => {
-        req.emit('done');
         this.updateLimits(proxyRes.headers as Record<string, string>);
         this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
+        req.emit('done');
 
-        if (!proxyRes.socket.destroyed) {
-          proxyRes.headers['access-control-expose-headers'] = (
-            proxyRes.headers['access-control-expose-headers'] || ''
-          )
-            .split(', ')
-            .filter((header) => {
-              if (/(ratelimit|scope)/i.test(header)) {
-                delete proxyRes.headers[header.toLowerCase()];
-                return false;
-              }
-              return true;
-            })
-            .join(', ');
-        }
+        if (req.timedout || proxyRes.socket.destroyed) return;
+
+        proxyRes.headers['access-control-expose-headers'] = (
+          proxyRes.headers['access-control-expose-headers'] || ''
+        )
+          .split(', ')
+          .filter((header) => {
+            if (/(ratelimit|scope)/i.test(header)) {
+              delete proxyRes.headers[header.toLowerCase()];
+              return false;
+            }
+            return true;
+          })
+          .join(', ');
       },
       onError: (err, req, res) => {
         req.emit('done', err);
@@ -71,9 +71,15 @@ class Client extends Readable {
       if (req.socket.destroyed) throw new Error('Client disconnected before proxing request');
 
       new Promise((resolve, reject) => {
-        req.on('done', (err?: Error) =>
-          setTimeout(() => (err ? reject(err) : resolve(true)), opts?.requestInterval || 100)
-        );
+        const timeout = setTimeout(() => {
+          req.timedout = true;
+          reject(new Error('Request timedout'));
+        }, opts?.requestTimeout);
+
+        req.on('done', (err?: Error) => {
+          clearTimeout(timeout);
+          setTimeout(() => (err ? reject(err) : resolve(true)), opts?.requestInterval || 100);
+        });
 
         this.middleware(req, res, next);
       })
@@ -82,7 +88,7 @@ class Client extends Readable {
     }, 1);
   }
 
-  updateLimits(headers: Record<string, string>): void {
+  async updateLimits(headers: Record<string, string>): Promise<void> {
     if (!headers['x-ratelimit-remaining']) return;
     if (/401/i.test(headers.status)) {
       if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
@@ -99,7 +105,7 @@ class Client extends Readable {
     }
   }
 
-  log(status: number, startedAt: Date): void {
+  async log(status: number, startedAt: Date): Promise<void> {
     this.push({
       token: this.token.substring(0, 4),
       queued: this.queued,
