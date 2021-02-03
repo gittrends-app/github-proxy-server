@@ -35,7 +35,7 @@ class Client extends Readable {
         authorization: `token ${token}`,
         'accept-encoding': 'gzip'
       },
-      timeout: opts?.requestTimeout ?? 30000,
+      proxyTimeout: opts?.requestTimeout ?? 30000,
       onProxyReq(proxyReq, req) {
         req.headers.started_at = new Date().toISOString();
       },
