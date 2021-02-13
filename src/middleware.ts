@@ -67,24 +67,26 @@ class Client extends Readable {
     });
 
     this.queue = queue(({ req, res, next }: MiddlewareInterface, callback) => {
-      if (req.timedout) throw new Error('Request timedout');
-      if (req.socket.destroyed) throw new Error('Client disconnected before proxing request');
+      if (req.timedout) return callback(new Error('Request timedout'));
+      if (req.socket.destroyed)
+        return callback(new Error('Client disconnected before proxing request'));
 
-      new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          req.timedout = true;
-          reject(new Error('Request timedout'));
-        }, opts?.requestTimeout);
+      let calls = 0;
+      const timeout = setTimeout(() => {
+        req.timedout = true;
+        if (!calls++) callback(new Error('Request timedout'));
+      }, opts?.requestTimeout);
 
-        req.on('done', (err?: Error) => {
-          clearTimeout(timeout);
-          setTimeout(() => (err ? reject(err) : resolve(true)), opts?.requestInterval || 100);
-        });
+      const handler = (err?: Error) => {
+        clearTimeout(timeout);
+        if (!calls++)
+          setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval || 100);
+      };
 
-        this.middleware(req, res, next);
-      })
-        .then(() => callback())
-        .catch((err) => callback(err));
+      req.on('done', handler);
+      res.on('close', handler);
+
+      this.middleware(req, res, next);
     }, 1);
   }
 
@@ -93,8 +95,6 @@ class Client extends Readable {
     if (/401/i.test(headers.status)) {
       if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
         this.remaining = 0;
-        this.limit = 0;
-        this.reset = Date.now() + 1000 * 60 * 60;
       } else {
         this.remaining -= 1;
       }
