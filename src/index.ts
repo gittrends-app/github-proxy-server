@@ -63,7 +63,7 @@ program
   .option('-t, --token <token>', 'GitHub token to be used', concatTokens, [])
   .option('--api <api>', 'API version to proxy requests', APIVersion.GraphQL)
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
-  .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 100)
+  .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 250)
   .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 30000)
   .option('--connection-timeout <timeout>', 'Connection timeout (ms)', Number, 60000)
   .option('--min-remaining <number>', 'Stop using token on', Number, 100)

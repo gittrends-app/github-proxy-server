@@ -80,7 +80,7 @@ class Client extends Readable {
       const handler = (err?: Error) => {
         clearTimeout(timeout);
         if (!calls++)
-          setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval || 100);
+          setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval || 250);
       };
 
       req.on('done', handler);
