@@ -64,7 +64,7 @@ program
   .option('--api <api>', 'API version to proxy requests', APIVersion.GraphQL)
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 250)
-  .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 30000)
+  .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 20000)
   .option('--connection-timeout <timeout>', 'Connection timeout (ms)', Number, 60000)
   .option('--min-remaining <number>', 'Stop using token on', Number, 100)
   .option('--silent', 'Dont show requests outputs')
