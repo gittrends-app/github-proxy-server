@@ -35,6 +35,7 @@ class Client extends Readable {
         authorization: `token ${token}`,
         'accept-encoding': 'gzip'
       },
+      timeout: opts?.requestTimeout ?? 30000,
       proxyTimeout: opts?.requestTimeout ?? 30000,
       onProxyReq(proxyReq, req) {
         req.headers.started_at = new Date().toISOString();
@@ -71,15 +72,9 @@ class Client extends Readable {
       if (req.socket.destroyed)
         return callback(new Error('Client disconnected before proxing request'));
 
-      let calls = 0;
-      const timeout = setTimeout(() => {
-        req.timedout = true;
-        if (!calls++) callback(new Error('Request timedout'));
-      }, opts?.requestTimeout);
-
+      let callbackCalls = 0;
       const handler = (err?: Error) => {
-        clearTimeout(timeout);
-        if (!calls++)
+        if (!callbackCalls++)
           setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval || 250);
       };
 
