@@ -97,7 +97,7 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   app.use(helmet());
   app.use(compression());
   app.use(responseTime());
-  app.use(timeout(`${program.connectionTimeout / 1000}s`, { respond: false }));
+  app.use(timeout(`${program.connectionTimeout / 1000}s`, { respond: true }));
 
   const proxy = new Proxy(tokens, options);
 
