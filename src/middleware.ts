@@ -31,19 +31,16 @@ class Client extends Readable {
     this.middleware = createProxyMiddleware({
       target: 'https://api.github.com',
       changeOrigin: true,
-      headers: {
-        authorization: `token ${token}`,
-        'accept-encoding': 'gzip'
-      },
-      timeout: opts?.requestTimeout ?? 30000,
-      proxyTimeout: opts?.requestTimeout ?? 30000,
+      headers: { authorization: `token ${token}` },
+      timeout: opts?.requestTimeout ?? 20000,
+      proxyTimeout: opts?.requestTimeout ?? 20000,
       onProxyReq(proxyReq, req) {
         req.headers.started_at = new Date().toISOString();
       },
       onProxyRes: (proxyRes, req) => {
+        req.emit('done');
         this.updateLimits(proxyRes.headers as Record<string, string>);
         this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
-        req.emit('done');
 
         if (req.timedout || proxyRes.socket.destroyed) return;
 
@@ -78,8 +75,10 @@ class Client extends Readable {
           setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval || 250);
       };
 
-      req.on('done', handler);
       res.on('close', handler);
+      req.on('done', handler);
+      req.on('close', handler);
+      req.on('error', handler);
 
       this.middleware(req, res, next);
     }, 1);
