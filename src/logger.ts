@@ -4,7 +4,7 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
 import { Writable } from 'stream';
-import { createStream, getBorderCharacters, TableStream } from 'table';
+import { createStream, getBorderCharacters, WritableStream } from 'table';
 
 dayjs.extend(relativeTime);
 
@@ -19,7 +19,7 @@ interface LoggerDTO {
 
 class Logger extends Writable {
   started = false;
-  readonly stream: TableStream;
+  readonly stream: WritableStream;
 
   constructor() {
     super({ objectMode: true });

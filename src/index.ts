@@ -71,7 +71,9 @@ program
   .version(version, '-v, --version', 'output the current version')
   .parse();
 
-if (!program.token.length && !(program.tokens && program.tokens.length)) {
+const options = program.opts();
+
+if (!options.token.length && !(options.tokens && options.tokens.length)) {
   consola.info(`${program.helpInformation()}`);
   consola.error(`Arguments missing (see "--token" and "--tokens").\n\n`);
   process.exit(1);
@@ -82,9 +84,9 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   // increase number os listeners
   EventEmitter.defaultMaxListeners = Number.MAX_SAFE_INTEGER;
 
-  const tokens = compact([...program.token, ...(program.tokens || [])]);
+  const tokens = compact([...options.token, ...(options.tokens || [])]);
 
-  const options = pick(program, [
+  const middlewareOpts: Record<string, unknown> = pick(program, [
     'requestInterval',
     'requestTimeout',
     'connectionTimeout',
@@ -97,9 +99,9 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
   app.use(helmet());
   app.use(compression());
   app.use(responseTime());
-  app.use(timeout(`${program.connectionTimeout / 1000}s`, { respond: true }));
+  app.use(timeout(`${options.connectionTimeout / 1000}s`, { respond: true }));
 
-  const proxy = new Proxy(tokens, options);
+  const proxy = new Proxy(tokens, middlewareOpts);
 
   tokens.map((token) =>
     https.get(
@@ -118,22 +120,30 @@ if (!program.token.length && !(program.tokens && program.tokens.length)) {
     )
   );
 
-  if (!program.silent) proxy.pipe(logger);
+  if (!options.silent) proxy.pipe(logger);
 
-  if (program.api === APIVersion.GraphQL) app.post('/graphql', proxy.schedule.bind(proxy));
-  else if (program.api === APIVersion.REST) app.get('/*', proxy.schedule.bind(proxy));
+  if (options.api === APIVersion.GraphQL) app.post('/graphql', proxy.schedule.bind(proxy));
+  else if (options.api === APIVersion.REST) app.get('/*', proxy.schedule.bind(proxy));
 
   app.all('/*', (req, res) => {
-    res.status(401).json({ message: `Endpoint not supported for "${program.api}" api.` });
+    res.status(401).json({ message: `Endpoint not supported for "${options.api}" api.` });
   });
 
-  const server = app.listen(program.port, () => {
+  const server = app.listen(options.port);
+
+  server.on('error', (error) => {
+    consola.error(error);
+    server.close();
+    process.exit(1);
+  });
+
+  server.on('listening', () => {
     consola.success(
-      `Proxy server running on ${program.port} (tokens: ${chalk.greenBright(tokens.length)})`
+      `Proxy server running on ${options.port} (tokens: ${chalk.greenBright(tokens.length)})`
     );
     consola.success(
       `${chalk.bold('Options')}: %s`,
-      Object.entries({ ...options, ...pick(program, ['api', 'connectionTimeout']) })
+      Object.entries({ ...middlewareOpts, ...pick(options, ['api', 'connectionTimeout']) })
         .sort((a: string[], b: string[]) => (a[0] > b[0] ? 1 : -1))
         .map(([k, v]) => `${k}: ${chalk.greenBright(v)}`)
         .join(', ')
