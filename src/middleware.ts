@@ -42,7 +42,7 @@ class Client extends Readable {
         this.updateLimits(proxyRes.headers as Record<string, string>);
         this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
 
-        if (req.timedout || proxyRes.socket.destroyed) return;
+        if (req.statusCode === 503 || proxyRes.socket.destroyed) return;
 
         proxyRes.headers['access-control-expose-headers'] = (
           proxyRes.headers['access-control-expose-headers'] || ''
