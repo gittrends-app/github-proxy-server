@@ -3,19 +3,13 @@ import shuffle from 'lodash/shuffle';
 import minBy from 'lodash/minBy';
 
 import { Readable, PassThrough } from 'stream';
-import { queue, QueueObject } from 'async';
-import { Response, Request, NextFunction } from 'express';
-import { createProxyMiddleware, RequestHandler } from 'http-proxy-middleware';
-
-interface MiddlewareInterface {
-  req: Request;
-  res: Response;
-  next: NextFunction;
-}
+import { Response, Request } from 'express';
+import Server, { createProxyServer } from 'http-proxy';
+import Bottleneck from 'bottleneck';
 
 class Client extends Readable {
-  readonly queue: QueueObject<MiddlewareInterface>;
-  readonly middleware: RequestHandler;
+  readonly queue: Bottleneck;
+  readonly middleware: Server;
   readonly token: string;
 
   limit = 5000;
@@ -28,60 +22,45 @@ class Client extends Readable {
     this.remaining = 5000;
     this.reset = Date.now() + 1000 * 60 * 60;
 
-    this.middleware = createProxyMiddleware({
+    this.middleware = createProxyServer({
       target: 'https://api.github.com',
-      changeOrigin: true,
       headers: { authorization: `token ${token}` },
+      changeOrigin: true,
       timeout: opts?.requestTimeout ?? 20000,
-      proxyTimeout: opts?.requestTimeout ?? 20000,
-      onProxyReq(proxyReq, req) {
-        req.headers.started_at = new Date().toISOString();
-      },
-      onProxyRes: (proxyRes, req) => {
-        req.emit('done');
-        this.updateLimits(proxyRes.headers as Record<string, string>);
-        this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
-
-        if (req.statusCode === 503 || proxyRes.socket.destroyed) return;
-
-        proxyRes.headers['access-control-expose-headers'] = (
-          proxyRes.headers['access-control-expose-headers'] || ''
-        )
-          .split(', ')
-          .filter((header) => {
-            if (/(ratelimit|scope)/i.test(header)) {
-              delete proxyRes.headers[header.toLowerCase()];
-              return false;
-            }
-            return true;
-          })
-          .join(', ');
-      },
-      onError: (err, req, res) => {
-        req.emit('done', err);
-        this.log(res.statusCode, new Date(req.headers.started_at as string));
-      },
-      logLevel: 'silent'
+      proxyTimeout: opts?.requestTimeout ?? 20000
     });
 
-    this.queue = queue(({ req, res, next }: MiddlewareInterface, callback) => {
-      if (req.timedout) return callback(new Error('Request timedout'));
-      if (req.socket.destroyed)
-        return callback(new Error('Client disconnected before proxing request'));
+    this.middleware.on('proxyReq', (proxyReq, req) => {
+      req.headers.started_at = new Date().toISOString();
+    });
 
-      let callbackCalls = 0;
-      const handler = (err?: Error) => {
-        if (!callbackCalls++)
-          setTimeout(() => (err ? callback(err) : callback()), opts?.requestInterval || 250);
-      };
+    this.middleware.on('proxyRes', (proxyRes, req) => {
+      req.emit('done');
+      this.updateLimits(proxyRes.headers as Record<string, string>);
+      this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
 
-      res.on('close', handler);
-      req.on('done', handler);
-      req.on('close', handler);
-      req.on('error', handler);
+      if (req.statusCode === 503 || proxyRes.socket.destroyed) return;
 
-      this.middleware(req, res, next);
-    }, 1);
+      proxyRes.headers['access-control-expose-headers'] = (
+        proxyRes.headers['access-control-expose-headers'] || ''
+      )
+        .split(', ')
+        .filter((header) => {
+          if (/(ratelimit|scope)/i.test(header)) {
+            delete proxyRes.headers[header.toLowerCase()];
+            return false;
+          }
+          return true;
+        })
+        .join(', ');
+    });
+
+    this.middleware.on('error', (err, req, res) => {
+      req.emit('done', err);
+      this.log(res.statusCode, new Date(req.headers.started_at as string));
+    });
+
+    this.queue = new Bottleneck({ maxConcurrent: 1, minTime: opts?.requestInterval || 250 });
   }
 
   async updateLimits(headers: Record<string, string>): Promise<void> {
@@ -110,18 +89,29 @@ class Client extends Readable {
     });
   }
 
-  schedule(req: Request, res: Response, next: NextFunction): void {
-    this.queue.push({ req, res, next }, (err) => {
-      if (err && !res.headersSent) res.status(500).json({ message: err.message });
+  schedule(req: Request, res: Response): void {
+    this.queue.schedule(async () => {
+      if (req.timedout) return Promise.reject(new Error('Request timedout'));
+      if (req.socket.destroyed)
+        return Promise.reject(new Error('Client disconnected before proxing request'));
+
+      await new Promise((resolve, reject) => {
+        req.on('done', resolve);
+        req.on('error', (err) => {
+          if (err && !res.headersSent) res.status(500).json({ message: err.message });
+          reject(err);
+        });
+        this.middleware.web(req, res);
+      });
     });
   }
 
   get queued(): number {
-    return this.queue.length();
+    return this.queue.counts().QUEUED;
   }
 
   get running(): number {
-    return this.queue.running();
+    return this.queue.counts().EXECUTING;
   }
 
   get totalRunning(): number {
@@ -152,7 +142,7 @@ export default class Proxy extends PassThrough {
   }
 
   // function to select the best client and queue request
-  schedule(req: Request, res: Response, next: NextFunction): void {
+  schedule(req: Request, res: Response): void {
     const client = minBy(
       shuffle(this.clients),
       (client) => client.totalRunning - client.remaining / 5000
@@ -166,7 +156,7 @@ export default class Proxy extends PassThrough {
       return;
     }
 
-    return client.schedule(req, res, next);
+    return client.schedule(req, res);
   }
 
   removeToken(token: string): void {
