@@ -91,9 +91,7 @@ class Client extends Readable {
 
   schedule(req: Request, res: Response): void {
     this.queue.schedule(async () => {
-      if (req.timedout) return Promise.reject(new Error('Request timedout'));
-      if (req.socket.destroyed)
-        return Promise.reject(new Error('Client disconnected before proxing request'));
+      if (req.timedout || req.socket.destroyed) return;
 
       await new Promise((resolve, reject) => {
         req.on('done', resolve);
