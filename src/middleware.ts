@@ -11,6 +11,7 @@ class Client extends Readable {
   readonly queue: Bottleneck;
   readonly middleware: Server;
   readonly token: string;
+  readonly requestInterval?: number;
 
   limit = 5000;
   remaining: number;
@@ -21,6 +22,7 @@ class Client extends Readable {
     this.token = token;
     this.remaining = 5000;
     this.reset = Date.now() + 1000 * 60 * 60;
+    this.requestInterval = opts?.requestInterval;
 
     this.middleware = createProxyServer({
       target: 'https://api.github.com',
@@ -60,7 +62,7 @@ class Client extends Readable {
       this.log(res.statusCode, new Date(req.headers.started_at as string));
     });
 
-    this.queue = new Bottleneck({ maxConcurrent: 1, minTime: opts?.requestInterval || 250 });
+    this.queue = new Bottleneck({ maxConcurrent: 1 });
   }
 
   async updateLimits(headers: Record<string, string>): Promise<void> {
@@ -100,7 +102,7 @@ class Client extends Readable {
           reject(err);
         });
         this.middleware.web(req, res);
-      });
+      }).finally(() => new Promise((resolve) => setTimeout(resolve, this.requestInterval || 250)));
     });
   }
 
