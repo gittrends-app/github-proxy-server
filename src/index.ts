@@ -86,7 +86,7 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
 
   const tokens = compact([...options.token, ...(options.tokens || [])]);
 
-  const middlewareOpts: Record<string, unknown> = pick(program, [
+  const middlewareOpts: Record<string, unknown> = pick(options, [
     'requestInterval',
     'requestTimeout',
     'connectionTimeout',
