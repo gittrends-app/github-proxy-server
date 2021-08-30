@@ -10,7 +10,7 @@ class Client extends Readable {
   readonly queue: Bottleneck;
   readonly middleware: Server;
   readonly token: string;
-  readonly requestInterval?: number;
+  readonly schedule: (req: Request, res: Response) => Promise<void>;
 
   limit = 5000;
   remaining: number;
@@ -21,7 +21,6 @@ class Client extends Readable {
     this.token = token;
     this.remaining = 5000;
     this.reset = Date.now() + 1000 * 60 * 60;
-    this.requestInterval = opts?.requestInterval;
 
     this.middleware = createProxyServer({
       target: 'https://api.github.com',
@@ -62,6 +61,29 @@ class Client extends Readable {
     });
 
     this.queue = new Bottleneck({ maxConcurrent: 1 });
+
+    this.schedule = this.queue.wrap(async (req: Request, res: Response) => {
+      if (req.timedout || req.socket.destroyed) return;
+
+      await new Promise((resolve) => {
+        if (opts?.requestTimeout)
+          setTimeout(() => {
+            req.destroy(new Error('Request timedout.'));
+            req.emit('error', new Error('Request timedout.'));
+          }, opts.requestTimeout);
+
+        const errorHandler = (err: Error) => {
+          if (err && !req.socket.destroyed && !res.headersSent)
+            res.status(500).json({ message: err.message });
+          this.log(504, new Date(req.headers.started_at as string));
+          resolve(err);
+        };
+
+        req.on('done', resolve);
+        req.on('error', errorHandler);
+        this.middleware.web(req, res);
+      }).finally(() => new Promise((resolve) => setTimeout(resolve, opts?.requestInterval || 250)));
+    });
   }
 
   async updateLimits(headers: Record<string, string>): Promise<void> {
@@ -87,22 +109,6 @@ class Client extends Readable {
       reset: this.reset,
       status,
       duration: Date.now() - startedAt.getTime()
-    });
-  }
-
-  schedule(req: Request, res: Response): void {
-    this.queue.schedule(async () => {
-      if (req.timedout || req.socket.destroyed) return;
-
-      await new Promise((resolve) => {
-        req.on('done', resolve);
-        req.on('error', (err) => {
-          if (err && !req.socket.destroyed && !res.headersSent)
-            res.status(500).json({ message: err.message });
-          resolve(err);
-        });
-        this.middleware.web(req, res);
-      }).finally(() => new Promise((resolve) => setTimeout(resolve, this.requestInterval || 250)));
     });
   }
 
@@ -153,7 +159,7 @@ export default class Proxy extends PassThrough {
       return;
     }
 
-    return client.schedule(req, res);
+    client.schedule(req, res);
   }
 
   removeToken(token: string): void {
