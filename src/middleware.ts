@@ -95,11 +95,12 @@ class Client extends Readable {
     this.queue.schedule(async () => {
       if (req.timedout || req.socket.destroyed) return;
 
-      await new Promise((resolve, reject) => {
+      await new Promise((resolve) => {
         req.on('done', resolve);
         req.on('error', (err) => {
-          if (err && !res.headersSent) res.status(500).json({ message: err.message });
-          reject(err);
+          if (err && !req.socket.destroyed && !res.headersSent)
+            res.status(500).json({ message: err.message });
+          resolve(err);
         });
         this.middleware.web(req, res);
       }).finally(() => new Promise((resolve) => setTimeout(resolve, this.requestInterval || 250)));
