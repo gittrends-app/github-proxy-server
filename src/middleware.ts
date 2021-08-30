@@ -68,7 +68,7 @@ class Client extends Readable {
     this.queue = new Bottleneck({ maxConcurrent: 1 });
 
     this.schedule = this.queue.wrap(async (req: Request, res: Response) => {
-      if (req.timedout || req.destroyed || req.socket.destroyed) return;
+      if (req.timedout || req.destroyed || req.socket.destroyed) return this.log();
 
       const timeout = opts?.requestTimeout
         ? setTimeout(() => {
@@ -110,14 +110,14 @@ class Client extends Readable {
     }
   }
 
-  async log(status: number, startedAt: Date): Promise<void> {
+  async log(status?: number, startedAt?: Date): Promise<void> {
     this.push({
       token: this.token.substring(0, 4),
       queued: this.queued,
       remaining: this.remaining,
       reset: this.reset,
-      status,
-      duration: Date.now() - startedAt.getTime()
+      status: status || '-',
+      duration: startedAt ? Date.now() - startedAt.getTime() : 0
     });
   }
 
