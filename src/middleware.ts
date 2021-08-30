@@ -1,6 +1,5 @@
 /* Author: Hudson S. Borges */
 import shuffle from 'lodash/shuffle';
-import minBy from 'lodash/minBy';
 
 import { Readable, PassThrough } from 'stream';
 import { Response, Request } from 'express';
@@ -108,15 +107,13 @@ class Client extends Readable {
   }
 
   get queued(): number {
-    return this.queue.counts().QUEUED;
+    const { RECEIVED, QUEUED } = this.queue.counts();
+    return RECEIVED + QUEUED;
   }
 
   get running(): number {
-    return this.queue.counts().EXECUTING;
-  }
-
-  get totalRunning(): number {
-    return this.queued + this.running;
+    const { RUNNING, EXECUTING } = this.queue.counts();
+    return RUNNING + EXECUTING;
   }
 }
 
@@ -144,9 +141,8 @@ export default class Proxy extends PassThrough {
 
   // function to select the best client and queue request
   schedule(req: Request, res: Response): void {
-    const client = minBy(
-      shuffle(this.clients),
-      (client) => client.totalRunning - client.remaining / 5000
+    const client = shuffle(this.clients).reduce((selected, client) =>
+      !selected || client.running === 0 || client.queued < selected.queued ? client : selected
     );
 
     if (!client || client.remaining <= this.minRemaining) {
