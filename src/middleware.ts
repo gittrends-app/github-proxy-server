@@ -10,7 +10,7 @@ class Client extends Readable {
   readonly queue: Bottleneck;
   readonly middleware: Server;
   readonly token: string;
-  readonly schedule: (req: Request, res: Response) => Promise<void>;
+  readonly schedule;
 
   limit = 5000;
   remaining: number;
@@ -32,15 +32,10 @@ class Client extends Readable {
 
     this.middleware.on('proxyReq', (proxyReq, req) => {
       req.headers.started_at = new Date().toISOString();
-      const baseDestroy = req.destroy.bind(req);
-      req.destroy = (error?: Error) => {
-        if (error && !proxyReq.destroyed) proxyReq.abort();
-        baseDestroy(error);
-      };
+      req.proxyRequest = proxyReq;
     });
 
     this.middleware.on('proxyRes', (proxyRes, req) => {
-      req.emit('done');
       this.updateLimits(proxyRes.headers as Record<string, string>);
       this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
 
@@ -60,38 +55,54 @@ class Client extends Readable {
         .join(', ');
     });
 
-    this.middleware.on('error', (err, req, res) => {
-      req.emit('done', err);
-      this.log(res.statusCode, new Date(req.headers.started_at as string));
+    this.middleware.on('error', (error, req, res) => {
+      this.emit('done', error);
+      const errorStatusCode = /timedout/gi.test(error.message) ? 504 : 500;
+      const statusCode = error ? errorStatusCode : res.statusCode;
+      this.log(statusCode, new Date(req.headers.started_at as string));
     });
 
     this.queue = new Bottleneck({ maxConcurrent: 1 });
 
     this.schedule = this.queue.wrap(async (req: Request, res: Response) => {
-      if (req.timedout || req.destroyed || req.socket.destroyed) return this.log();
+      try {
+        if (req.timedout || req.destroyed || req.aborted) {
+          throw new Error('Request timedout, destroyed, or aborted');
+        }
 
-      const timeout = opts?.requestTimeout
-        ? setTimeout(() => {
-            req.destroy(new Error('Request timedout.'));
-            req.emit('error', new Error('Request timedout.'));
-          }, opts.requestTimeout)
-        : null;
+        let timeout: ReturnType<typeof setTimeout> | null;
 
-      await new Promise((resolve) => {
-        const errorHandler = (err: Error) => {
-          if (err && !res.socket?.destroyed && !res.headersSent)
-            res.status(500).json({ message: err.message });
-          this.log(504, new Date(req.headers.started_at as string));
-          resolve(err);
-        };
+        await new Promise((resolve, reject) => {
+          res.on('finish', resolve);
 
-        req.on('done', resolve);
-        req.on('error', errorHandler);
+          req.on('aborted', () => {
+            if (!req.proxyRequest?.destroyed) req.proxyRequest?.abort();
+            reject(new Error('Request aborted'));
+          });
 
-        this.middleware.web(req, res);
-      })
-        .finally(() => timeout && clearTimeout(timeout))
-        .finally(() => new Promise((resolve) => setTimeout(resolve, opts?.requestInterval || 250)));
+          this.middleware.web(req, res, undefined, reject);
+
+          timeout = opts?.requestTimeout
+            ? setTimeout(() => {
+                req.proxyRequest?.abort();
+                reject(new Error('Request timedout'));
+              }, opts.requestTimeout)
+            : null;
+        })
+          .finally(() => timeout && clearTimeout(timeout))
+          .finally(
+            () => new Promise((resolve) => setTimeout(resolve, opts?.requestInterval || 250))
+          );
+      } catch (error: any) {
+        const errorStatusCode = /timedout/gi.test(error.message) ? 504 : 500;
+        this.log(
+          errorStatusCode,
+          req.headers.started_at ? new Date(req.headers.started_at as string) : new Date()
+        );
+        if (!req.proxyRequest?.destroyed) req.proxyRequest?.abort();
+        if (!res.socket?.destroyed && !res.headersSent)
+          res.status(errorStatusCode).json({ message: error.message });
+      }
     });
   }
 
