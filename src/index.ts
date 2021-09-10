@@ -99,7 +99,7 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
   app.use(helmet());
   app.use(compression());
   app.use(responseTime());
-  app.use(timeout(`${options.connectionTimeout / 1000}s`, { respond: true }));
+  app.use(timeout(`${options.connectionTimeout / 1000}s`, { respond: false }));
 
   const proxy = new Proxy(tokens, middlewareOpts);
 
