@@ -1,6 +1,7 @@
 /* Author: Hudson S. Borges */
 import shuffle from 'lodash/shuffle';
 
+import { uniq } from 'lodash';
 import { Readable, PassThrough } from 'stream';
 import { Response, Request } from 'express';
 import Server, { createProxyServer } from 'http-proxy';
@@ -15,6 +16,7 @@ class Client extends Readable {
   limit = 5000;
   remaining: number;
   reset: number;
+  resetTimeout?: ReturnType<typeof setTimeout>;
 
   constructor(token: string, opts?: { requestTimeout?: number; requestInterval?: number }) {
     super({ objectMode: true, read: () => null });
@@ -25,9 +27,7 @@ class Client extends Readable {
     this.middleware = createProxyServer({
       target: 'https://api.github.com',
       headers: { authorization: `token ${token}` },
-      changeOrigin: true,
-      timeout: opts?.requestTimeout ?? 20000,
-      proxyTimeout: opts?.requestTimeout ?? 20000
+      changeOrigin: true
     });
 
     this.middleware.on('proxyReq', (proxyReq, req) => {
@@ -55,69 +55,54 @@ class Client extends Readable {
         .join(', ');
     });
 
-    this.middleware.on('error', (error, req, res) => {
-      this.emit('done', error);
-      const errorStatusCode = /timedout/gi.test(error.message) ? 504 : 500;
-      const statusCode = error ? errorStatusCode : res.statusCode;
-      this.log(statusCode, new Date(req.headers.started_at as string));
-    });
-
     this.queue = new Bottleneck({ maxConcurrent: 1 });
 
     this.schedule = this.queue.wrap(async (req: Request, res: Response) => {
-      try {
-        if (req.timedout || req.destroyed || req.aborted) {
-          throw new Error('Request timedout, destroyed, or aborted');
-        }
+      if (req.timedout || req.destroyed || req.aborted) return this.log();
 
-        let timeout: ReturnType<typeof setTimeout> | null;
+      let timeout: ReturnType<typeof setTimeout> | null;
 
-        await new Promise((resolve, reject) => {
-          res.on('finish', resolve);
+      await new Promise((resolve, reject) => {
+        res.on('close', resolve);
+        req.on('aborted', () => reject(new Error('Request aborted')));
 
-          req.on('aborted', () => {
-            if (!req.proxyRequest?.destroyed) req.proxyRequest?.abort();
-            reject(new Error('Request aborted'));
-          });
+        this.middleware.web(req, res, undefined, (error) => reject(error));
 
-          this.middleware.web(req, res, undefined, reject);
+        timeout = opts?.requestTimeout
+          ? setTimeout(() => reject(new Error('Request timedout')), opts.requestTimeout)
+          : null;
+      })
+        .finally(() => (timeout ? clearTimeout(timeout) : null))
+        .catch(async (error) => {
+          const errorStatusCode = /timedout/gi.test(error.message) ? 504 : 500;
+          this.log(errorStatusCode, new Date(req.headers.started_at as string));
 
-          timeout = opts?.requestTimeout
-            ? setTimeout(() => {
-                req.proxyRequest?.abort();
-                reject(new Error('Request timedout'));
-              }, opts.requestTimeout)
-            : null;
+          if (!(res.destroyed || res.headersSent)) {
+            res.status(errorStatusCode).json({ message: error.message });
+          }
+
+          if (!req.proxyRequest?.destroyed) {
+            req.proxyRequest?.abort();
+          }
         })
-          .finally(() => timeout && clearTimeout(timeout))
-          .finally(
-            () => new Promise((resolve) => setTimeout(resolve, opts?.requestInterval || 250))
-          );
-      } catch (error: any) {
-        const errorStatusCode = /timedout/gi.test(error.message) ? 504 : 500;
-        this.log(
-          errorStatusCode,
-          req.headers.started_at ? new Date(req.headers.started_at as string) : new Date()
-        );
-        if (!req.proxyRequest?.destroyed) req.proxyRequest?.abort();
-        if (!res.socket?.destroyed && !res.headersSent)
-          res.status(errorStatusCode).json({ message: error.message });
-      }
+        .finally(() => new Promise((resolve) => setTimeout(resolve, opts?.requestInterval || 0)));
     });
   }
 
   async updateLimits(headers: Record<string, string>): Promise<void> {
     if (!headers['x-ratelimit-remaining']) return;
     if (/401/i.test(headers.status)) {
-      if (parseInt(headers['x-ratelimit-limit'], 10) > 0) {
-        this.remaining = 0;
-      } else {
-        this.remaining -= 1;
-      }
+      if (parseInt(headers['x-ratelimit-limit'], 10) > 0) this.remaining = 0;
+      else this.remaining -= 1;
     } else {
       this.remaining = parseInt(headers['x-ratelimit-remaining'], 10);
       this.limit = parseInt(headers['x-ratelimit-limit'], 10);
       this.reset = parseInt(headers['x-ratelimit-reset'], 10);
+      if (this.resetTimeout) clearTimeout(this.resetTimeout);
+      this.resetTimeout = setTimeout(
+        () => (this.remaining = 5000),
+        Math.max(0, this.reset * 1000 - Date.now())
+      );
     }
   }
 
@@ -143,35 +128,42 @@ class Client extends Readable {
   }
 }
 
+export type ProxyOptions = {
+  requestInterval?: number;
+  requestTimeout?: number;
+  minRemaining?: number;
+};
 export default class Proxy extends PassThrough {
   private readonly clients: Client[];
-  private readonly minRemaining: number;
+  private readonly options: {
+    requestInterval: number;
+    requestTimeout: number;
+    minRemaining: number;
+  };
 
-  constructor(
-    tokens: string[],
-    opts?: { requestInterval?: number; requestTimeout?: number; minRemaining?: number }
-  ) {
+  constructor(tokens: string[], opts?: ProxyOptions) {
     super({ objectMode: true });
-    this.minRemaining = opts?.minRemaining ?? 100;
 
-    this.clients = tokens.map(
-      (token) =>
-        new Client(token, {
-          requestInterval: opts?.requestInterval,
-          requestTimeout: opts?.requestTimeout
-        })
+    if (!tokens.length) throw new Error('At least one token is required!');
+
+    this.options = Object.assign(
+      { requestInterval: 250, requestTimeout: 20000, minRemaining: 0 },
+      opts
     );
 
+    this.clients = uniq(tokens).map((token) => new Client(token, this.options));
     this.clients.forEach((client) => client.pipe(this, { end: false }));
   }
 
   // function to select the best client and queue request
   schedule(req: Request, res: Response): void {
-    const client = shuffle(this.clients).reduce((selected, client) =>
-      !selected || client.running === 0 || client.queued < selected.queued ? client : selected
-    );
+    const client = this.clients.length
+      ? shuffle(this.clients).reduce((selected, client) =>
+          !selected || client.running === 0 || client.queued < selected.queued ? client : selected
+        )
+      : null;
 
-    if (!client || client.remaining <= this.minRemaining) {
+    if (!client || client.remaining <= this.options.minRemaining) {
       res.status(503).json({
         message: 'Proxy Server: no requests available',
         reset: Math.min(...this.clients.map((client) => client.reset))
@@ -184,5 +176,14 @@ export default class Proxy extends PassThrough {
 
   removeToken(token: string): void {
     this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1);
+  }
+
+  addToken(token: string): void {
+    if (this.clients.map((client) => client.token).includes(token)) return;
+    this.clients.push(new Client(token, this.options));
+  }
+
+  get tokens(): string[] {
+    return this.clients.map((client) => client.token);
   }
 }
