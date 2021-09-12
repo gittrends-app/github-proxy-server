@@ -94,7 +94,11 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
   ]);
 
   const app = express();
-  app.use(statusMonitor());
+  app.use(
+    statusMonitor({
+      healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
+    })
+  );
   app.use(cors());
   app.use(helmet());
   app.use(compression());
