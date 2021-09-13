@@ -77,9 +77,9 @@ describe('GitHub API is down or not reachable', () => {
 
   test('it should respond with Internal Server Error', async () => {
     return Promise.all(
-      times(50, () =>
+      times(25, () =>
         axiosClient.get('/').catch((error) => {
-          expect(error.response?.status).toBe(500);
+          expect(error.response?.status).toBe(600);
           expect(error.response?.data?.message).toMatch(/ECONNREFUSED/gi);
         })
       )
@@ -214,7 +214,7 @@ describe('GitHub API is online', () => {
   test('it should interrupt long requests', () => {
     return Promise.all(
       times(25, () =>
-        expect(axiosClient.get('/too-long-request')).rejects.toHaveProperty('response.status', 504)
+        expect(axiosClient.get('/too-long-request')).rejects.toHaveProperty('response.status', 600)
       )
     );
   });
@@ -222,7 +222,7 @@ describe('GitHub API is online', () => {
   test('it should respond to broken connections', () => {
     return Promise.all(
       times(25, () =>
-        expect(axiosClient.get('/broken-request')).rejects.toHaveProperty('response.status', 500)
+        expect(axiosClient.get('/broken-request')).rejects.toHaveProperty('response.status', 600)
       )
     );
   });

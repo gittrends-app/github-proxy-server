@@ -7,8 +7,15 @@ import { Response, Request } from 'express';
 import Server, { createProxyServer } from 'http-proxy';
 import Bottleneck from 'bottleneck';
 
+class ProxyError extends Error {
+  constructor(m: string) {
+    super(m);
+    Object.setPrototypeOf(this, ProxyError.prototype);
+  }
+}
+
 class Client extends Readable {
-  readonly queue: Bottleneck;
+  private readonly queue: Bottleneck;
   readonly middleware: Server;
   readonly token: string;
   readonly schedule;
@@ -27,19 +34,20 @@ class Client extends Readable {
     this.middleware = createProxyServer({
       target: 'https://api.github.com',
       headers: { authorization: `token ${token}` },
+      proxyTimeout: opts?.requestTimeout,
+      ws: false,
+      xfwd: true,
       changeOrigin: true
     });
 
     this.middleware.on('proxyReq', (proxyReq, req) => {
-      req.headers.started_at = new Date().toISOString();
+      req.startedAt = new Date();
       req.proxyRequest = proxyReq;
     });
 
     this.middleware.on('proxyRes', (proxyRes, req) => {
       this.updateLimits(proxyRes.headers as Record<string, string>);
-      this.log(proxyRes.statusCode ?? 0, new Date(req.headers.started_at as string));
-
-      if (req.statusCode === 503 || proxyRes.socket.destroyed) return;
+      this.log(proxyRes.statusCode ?? 0, req.startedAt);
 
       proxyRes.headers['access-control-expose-headers'] = (
         proxyRes.headers['access-control-expose-headers'] || ''
@@ -55,35 +63,24 @@ class Client extends Readable {
         .join(', ');
     });
 
-    this.queue = new Bottleneck({ maxConcurrent: 1 });
+    this.queue = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
 
     this.schedule = this.queue.wrap(async (req: Request, res: Response) => {
       if (req.timedout || req.destroyed || req.aborted) return this.log();
 
-      let timeout: ReturnType<typeof setTimeout> | null;
-
       await new Promise((resolve, reject) => {
         res.on('close', resolve);
-        req.on('aborted', () => reject(new Error('Request aborted')));
-
+        req.on('aborted', () => reject(new ProxyError('Request aborted')));
         this.middleware.web(req, res, undefined, (error) => reject(error));
-
-        timeout = opts?.requestTimeout
-          ? setTimeout(() => reject(new Error('Request timedout')), opts.requestTimeout)
-          : null;
       })
-        .finally(() => (timeout ? clearTimeout(timeout) : null))
         .catch(async (error) => {
-          const errorStatusCode = /timedout/gi.test(error.message) ? 504 : 500;
-          this.log(errorStatusCode, new Date(req.headers.started_at as string));
+          this.log(600, req.startedAt);
 
           if (!(res.destroyed || res.headersSent)) {
-            res.status(errorStatusCode).json({ message: error.message });
+            res.status(600).json({ message: error.message });
           }
 
-          if (!req.proxyRequest?.destroyed) {
-            req.proxyRequest?.abort();
-          }
+          req.proxyRequest?.abort();
         })
         .finally(() => new Promise((resolve) => setTimeout(resolve, opts?.requestInterval || 0)));
     });
@@ -97,6 +94,7 @@ class Client extends Readable {
     } else {
       this.remaining = parseInt(headers['x-ratelimit-remaining'], 10);
       this.limit = parseInt(headers['x-ratelimit-limit'], 10);
+      if (parseInt(headers['x-ratelimit-reset'], 10) === this.reset) return;
       this.reset = parseInt(headers['x-ratelimit-reset'], 10);
       if (this.resetTimeout) clearTimeout(this.resetTimeout);
       this.resetTimeout = setTimeout(
