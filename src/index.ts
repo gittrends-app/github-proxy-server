@@ -6,11 +6,6 @@ import chalk from 'chalk';
 import { EventEmitter } from 'events';
 
 import express from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import compression from 'compression';
-import timeout from 'connect-timeout';
-import responseTime from 'response-time';
 import statusMonitor from 'express-status-monitor';
 
 import { resolve } from 'path';
@@ -65,7 +60,6 @@ program
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 250)
   .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 20000)
-  .option('--connection-timeout <timeout>', 'Connection timeout (ms)', Number, 60000)
   .option('--min-remaining <number>', 'Stop using token on', Number, 100)
   .option('--silent', 'Dont show requests outputs')
   .version(version, '-v, --version', 'output the current version')
@@ -89,7 +83,6 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
   const middlewareOpts: Record<string, unknown> = pick(options, [
     'requestInterval',
     'requestTimeout',
-    'connectionTimeout',
     'minRemaining'
   ]);
 
@@ -99,11 +92,6 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
       healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
     })
   );
-  app.use(cors());
-  app.use(helmet());
-  app.use(compression());
-  app.use(responseTime());
-  app.use(timeout(`${options.connectionTimeout / 1000}s`, { respond: false }));
 
   const proxy = new Proxy(tokens, middlewareOpts);
 
@@ -147,7 +135,7 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
     );
     consola.success(
       `${chalk.bold('Options')}: %s`,
-      Object.entries({ ...middlewareOpts, ...pick(options, ['api', 'connectionTimeout']) })
+      Object.entries({ ...middlewareOpts, ...pick(options, ['api']) })
         .sort((a: string[], b: string[]) => (a[0] > b[0] ? 1 : -1))
         .map(([k, v]) => `${k}: ${chalk.greenBright(v)}`)
         .join(', ')
