@@ -1,6 +1,6 @@
 {
   "name": "@hsborges/github-proxy-server",
-  "version": "3.4.0",
+  "version": "4.0.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "repository": "git@github.com:hsborges/github-proxy-server.git",
