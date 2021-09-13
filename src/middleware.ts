@@ -66,7 +66,7 @@ class Client extends Readable {
     this.queue = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
 
     this.schedule = this.queue.wrap(async (req: Request, res: Response) => {
-      if (req.timedout || req.destroyed || req.aborted) return this.log();
+      if (req.destroyed) return Promise.all([req.destroy(), this.log()]);
 
       await new Promise((resolve, reject) => {
         res.on('close', resolve);
