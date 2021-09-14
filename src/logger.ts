@@ -26,12 +26,14 @@ class Logger extends Writable {
 
     this.stream = createStream({
       columnCount: 6,
-      columnDefault: { alignment: 'right', width: 10 },
+      columnDefault: { alignment: 'right', width: 5 },
       columns: {
-        0: { width: 6 },
-        1: { width: 6 },
-        3: { width: 20 },
-        4: { width: 6 }
+        0: { width: 5 },
+        1: { width: 3 },
+        2: { width: 5 },
+        3: { width: 18 },
+        4: { width: 4 },
+        5: { width: 7 }
       },
       border: getBorderCharacters('void')
     });
@@ -41,8 +43,11 @@ class Logger extends Writable {
   _write(chunk: LoggerDTO, encoding: string, done: Function) {
     if (!this.started) {
       this.started = true;
-      this.stream.write(
-        ['token', 'queued', 'remaining', 'reset', 'status', 'duration'].map((v) => chalk.bold(v))
+      process.stdout.write('\n' + chalk.bold('Columns: '));
+      process.stdout.write(
+        ['token', 'queue', 'remaining', 'reset', 'status', 'duration']
+          .map((v) => chalk.underline(v))
+          .join(', ') + '\n'
       );
     }
 
