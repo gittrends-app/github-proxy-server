@@ -9,7 +9,7 @@ import express from 'express';
 import statusMonitor from 'express-status-monitor';
 
 import { resolve } from 'path';
-import { program } from 'commander';
+import { Option, program } from 'commander';
 import { uniq, pick, compact } from 'lodash';
 import { existsSync, readFileSync } from 'fs';
 import { version } from './package.json';
@@ -56,7 +56,11 @@ program
     parseInt(process.env.PORT || '3000', 10)
   )
   .option('-t, --token <token>', 'GitHub token to be used', concatTokens, [])
-  .option('--api <api>', 'API version to proxy requests', APIVersion.GraphQL)
+  .addOption(
+    new Option('--api <api>', 'API version to proxy requests')
+      .choices([APIVersion.GraphQL, APIVersion.REST])
+      .default(APIVersion.GraphQL)
+  )
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 250)
   .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 20000)
