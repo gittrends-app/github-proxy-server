@@ -2,13 +2,12 @@
 import chalk from 'chalk';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-
 import { Writable } from 'stream';
-import { createStream, getBorderCharacters, WritableStream } from 'table';
+import { WritableStream, createStream, getBorderCharacters } from 'table';
 
 dayjs.extend(relativeTime);
 
-interface LoggerDTO {
+export interface ProxyLoggerDTO {
   token: string;
   queued: number;
   remaining: number;
@@ -17,7 +16,7 @@ interface LoggerDTO {
   duration: number;
 }
 
-class Logger extends Writable {
+export default class ProxyLogger extends Writable {
   started = false;
   readonly stream: WritableStream;
 
@@ -40,7 +39,7 @@ class Logger extends Writable {
   }
 
   /* eslint-disable-next-line */
-  _write(chunk: LoggerDTO, encoding: string, done: Function) {
+  _write(chunk: ProxyLoggerDTO, encoding: string, done: Function) {
     if (!this.started) {
       this.started = true;
       process.stdout.write('\n' + chalk.bold('Columns: '));
@@ -63,5 +62,3 @@ class Logger extends Writable {
     done();
   }
 }
-
-export default new Logger();

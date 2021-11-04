@@ -1,13 +1,15 @@
 /* Author: Hudson S. Borges */
-import shuffle from 'lodash/shuffle';
-
-import { uniq } from 'lodash';
-import { Readable, PassThrough } from 'stream';
-import { Response, Request } from 'express';
-import Server, { createProxyServer } from 'http-proxy';
 import Bottleneck from 'bottleneck';
+import { Request, Response } from 'express';
+import faker from 'faker';
+import Server, { createProxyServer } from 'http-proxy';
+import { uniq } from 'lodash';
+import shuffle from 'lodash/shuffle';
+import { PassThrough, Readable } from 'stream';
 
-class ProxyError extends Error {
+faker.seed(12345);
+
+export class ProxyError extends Error {
   constructor(m: string) {
     super(m);
     Object.setPrototypeOf(this, ProxyError.prototype);
@@ -15,7 +17,8 @@ class ProxyError extends Error {
 }
 
 class Client extends Readable {
-  private readonly queue: Bottleneck;
+  readonly queue: Bottleneck;
+
   readonly middleware: Server;
   readonly token: string;
   readonly schedule;
@@ -33,7 +36,10 @@ class Client extends Readable {
 
     this.middleware = createProxyServer({
       target: 'https://api.github.com',
-      headers: { authorization: `token ${token}` },
+      headers: {
+        Authorization: `token ${token}`,
+        'User-Agent': faker.internet.userAgent()
+      },
       proxyTimeout: opts?.requestTimeout,
       ws: false,
       xfwd: true,
@@ -126,12 +132,12 @@ class Client extends Readable {
   }
 }
 
-export type ProxyOptions = {
+export type ProxyMiddlewareOpts = {
   requestInterval?: number;
   requestTimeout?: number;
   minRemaining?: number;
 };
-export default class Proxy extends PassThrough {
+export default class ProxyMiddleware extends PassThrough {
   private readonly clients: Client[];
   private readonly options: {
     requestInterval: number;
@@ -139,7 +145,7 @@ export default class Proxy extends PassThrough {
     minRemaining: number;
   };
 
-  constructor(tokens: string[], opts?: ProxyOptions) {
+  constructor(tokens: string[], opts?: ProxyMiddlewareOpts) {
     super({ objectMode: true });
 
     if (!tokens.length) throw new Error('At least one token is required!');
