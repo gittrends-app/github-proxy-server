@@ -1,21 +1,21 @@
 #!/usr/bin/env node
-/* Author: Hudson S. Borges */
-import https from 'https';
-import consola from 'consola';
-import chalk from 'chalk';
-import { EventEmitter } from 'events';
 
+/* Author: Hudson S. Borges */
+import chalk from 'chalk';
+import { Option, program } from 'commander';
+import consola from 'consola';
+import { EventEmitter } from 'events';
 import express from 'express';
 import statusMonitor from 'express-status-monitor';
-
-import { resolve } from 'path';
-import { Option, program } from 'commander';
-import { uniq, pick, compact } from 'lodash';
 import { existsSync, readFileSync } from 'fs';
-import { version } from './package.json';
+import https from 'https';
+import { address } from 'ip';
+import { compact, pick, uniq } from 'lodash';
+import { resolve } from 'path';
 
-import Proxy from './middleware';
-import logger from './logger';
+import ProxyLogger from './logger';
+import ProxyMiddleware from './middleware';
+import { version } from './package.json';
 
 // parse tokens from input
 function tokensParser(text: string): string[] {
@@ -60,6 +60,7 @@ program
     new Option('--api <api>', 'API version to proxy requests')
       .choices([APIVersion.GraphQL, APIVersion.REST])
       .default(APIVersion.GraphQL)
+      .argParser((value) => value.toLowerCase())
   )
   .option('--tokens <file>', 'File containing a list of tokens', getTokens)
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 250)
@@ -84,11 +85,11 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
 
   const tokens = compact([...options.token, ...(options.tokens || [])]);
 
-  const middlewareOpts: Record<string, unknown> = pick(options, [
-    'requestInterval',
-    'requestTimeout',
-    'minRemaining'
-  ]);
+  const middlewareOpts = {
+    requestInterval: options.requestInterval,
+    requestTimeout: options.requestTimeout,
+    minRemaining: options.minRemaining
+  };
 
   const app = express();
   app.use(
@@ -97,7 +98,7 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
     })
   );
 
-  const proxy = new Proxy(tokens, middlewareOpts);
+  const proxy = new ProxyMiddleware(tokens, middlewareOpts);
 
   tokens.map((token) =>
     https.get(
@@ -110,13 +111,13 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
       },
       ({ statusCode }) => {
         if (statusCode === 200) return;
-        consola.error(`Invalid token (${token}) detected!`);
+        consola.warn(`Invalid token (${token}) detected!`);
         proxy.removeToken(token);
       }
     )
   );
 
-  if (!options.silent) proxy.pipe(logger);
+  if (!options.silent) proxy.pipe(new ProxyLogger());
 
   if (options.api === APIVersion.GraphQL) app.post('/graphql', proxy.schedule.bind(proxy));
   else if (options.api === APIVersion.REST) app.get('/*', proxy.schedule.bind(proxy));
@@ -134,8 +135,9 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
   });
 
   server.on('listening', () => {
+    const host = `http://${address()}:${options.port}`;
     consola.success(
-      `Proxy server running on ${options.port} (tokens: ${chalk.greenBright(tokens.length)})`
+      `Proxy server running on ${host} (tokens: ${chalk.greenBright(tokens.length)})`
     );
     consola.success(
       `${chalk.bold('Options')}: %s`,

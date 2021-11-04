@@ -1,10 +1,10 @@
+import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import axios, { AxiosInstance } from 'axios';
+import express, { Express } from 'express';
 import getPort from 'get-port';
 import httpProxy from 'http-proxy';
 import { times } from 'lodash';
 import { mocked } from 'ts-jest/utils';
-import express, { Express } from 'express';
-import axios, { AxiosInstance } from 'axios';
-import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 
 import Middleware from './middleware';
 
@@ -36,7 +36,7 @@ afterEach(async () => {
 describe('Middleware constructor and methods', () => {
   beforeEach(() => {
     mokedHttpProxy.createProxyServer.mockImplementation((options) => {
-      const { createProxyServer } = <typeof httpProxy>jest.requireActual('http-proxy');
+      const { createProxyServer } = jest.requireActual('http-proxy') as typeof httpProxy;
       return createProxyServer(options);
     });
   });
@@ -66,7 +66,7 @@ describe('GitHub API is down or not reachable', () => {
     const randomPort = await getPort();
 
     mokedHttpProxy.createProxyServer.mockImplementation((options) => {
-      const { createProxyServer } = <typeof httpProxy>jest.requireActual('http-proxy');
+      const { createProxyServer } = jest.requireActual('http-proxy') as typeof httpProxy;
       return createProxyServer({ ...options, target: `http://127.0.0.1:${randomPort}` });
     });
 
@@ -125,7 +125,7 @@ describe('GitHub API is online', () => {
     });
 
     mokedHttpProxy.createProxyServer.mockImplementation((options) => {
-      const { createProxyServer } = <typeof httpProxy>jest.requireActual('http-proxy');
+      const { createProxyServer } = jest.requireActual('http-proxy') as typeof httpProxy;
       return createProxyServer({ ...options, target: `http://127.0.0.1:${fakeAPIPort}` });
     });
 
