@@ -15,7 +15,7 @@ GitHub Proxy Server is a tool to support developers and researchers make request
 **How it works?**
 
 <p align="center">
-  <img src="architecture.png" alt="GitHub Proxy Server" width="200"/>
+  <img src="architecture.png" alt="GitHub Proxy Server" width="350px"/>
   
 </p>
 <p align="center">Proxy Server Architecture</p>
