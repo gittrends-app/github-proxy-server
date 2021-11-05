@@ -1,15 +1,44 @@
 # GitHub Proxy Server
 
-GitHub Proxy Server is a tool to support researchers make a lot of requests to GitHub API (REST or GraphQL).
+<br/><p align="center"><em>
+GitHub Proxy Server is a tool to support developers and researchers make requests to GitHub API (REST or GraphQL) by automatically managing access tokens and client requests to avoid triggering the GitHub API abuse detection mechanisms.
+</em></p><br/><hr/><br/>
 
-In summary, it allows use multiple access tokens and synchronizes the requests to not inflict the GitHub API usage policy.
+**Why should I use it?** GitHub API has a limited number of requests per client and implements several mechanisms to detect user abuses. Thus, users must handle these restrictions in their applications. In this sense, GitHub Proxy Server is a tool that abstracts these problems through a proxy server.
 
-## Installation
+**When should I use it?** This tool is intended to be used by developers and researches that need to perform massive data collection of public repositories using both REST and GraphQL APIs.
 
-Use the package manager [npm](https://www.npmjs.com/) to install locally.
+**When should I <ins>not</ins> use it?** If you need to deal with private information of users and repositories this tool is not for you (see [limitations section](#limitations)).
+
+**Can I use it with other libs?** Yes, as long they allow the users setup the proxy server as target (see [samples](samples)).
+
+**How it works?**
+
+<figure>
+  <center>
+    <img src="architecture.png" alt="GitHub Proxy Server" width="200"/>
+    <figcaption>Proxy Server Architecture</figcaption>
+  </center>
+</figure>
+
+## Features:
+
+- Support to multiple access tokens
+
+- Load balancing
+
+- Rate limiter
+
+- Customizable parameters
+
+## Getting Started
+
+You will need to install:
 
 ```bash
 npm install -g @hsborges/github-proxy-server
+# or
+yarn global add @hsborges/github-proxy-server
 ```
 
 ## Usage
@@ -33,6 +62,36 @@ curl -s http://localhost:8080/users/hsborges 2>&1
 ```
 
 To more usage information, use the option `--help`.
+
+```
+Usage: index [options]
+
+Options:
+  -p, --port <port>              Port to start the proxy server (default: 3000)
+  -t, --token <token>            GitHub token to be used (default: [])
+  --api <api>                    API version to proxy requests (choices: "graphql", "rest", default: "graphql")
+  --tokens <file>                File containing a list of tokens
+  --request-interval <interval>  Interval between requests (ms) (default: 250)
+  --request-timeout <timeout>    Request timeout (ms) (default: 20000)
+  --min-remaining <number>       Stop using token on (default: 100)
+  --silent                       Dont show requests outputs
+  -v, --version                  output the current version
+  -h, --help                     display help for command
+```
+
+## Limitations
+
+GitHub Proxy Server was primarly intended to be a tool to support massive data collection of public repositories and users. To this purpose, we use a pool of access tokens to proxy requests to GitHub servers. For each request, we select the token with the lowest queue size and with more requests available.
+
+Besides that, **we do not perform any verification on the clients requests, which may implies in security issues for the users who provided their tokens**.
+
+To mitigate this problem, you can ensure that your access tokens are generated using only the necessary scopes (e.g., _public_repo_, _read:user_, etc.).
+
+You may also ensure access to the proxy server only to users that you trust.
+
+## Integrations
+
+As mentioned, this tool can be used with serveral other libraries. You can find several examples in [samples](samples) folder.
 
 ## Contributing
 
