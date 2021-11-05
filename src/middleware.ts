@@ -2,6 +2,7 @@
 import Bottleneck from 'bottleneck';
 import { Request, Response } from 'express';
 import faker from 'faker';
+import { ServerResponse } from 'http';
 import Server, { createProxyServer } from 'http-proxy';
 import { uniq } from 'lodash';
 import shuffle from 'lodash/shuffle';
@@ -77,7 +78,7 @@ class Client extends Readable {
       await new Promise((resolve, reject) => {
         res.on('close', resolve);
         req.on('aborted', () => reject(new ProxyError('Request aborted')));
-        this.middleware.web(req, res, undefined, (error) => reject(error));
+        this.middleware.web(req, res as ServerResponse, undefined, (error) => reject(error));
       })
         .catch(async (error) => {
           this.log(600, req.startedAt);
@@ -86,7 +87,7 @@ class Client extends Readable {
             res.status(600).json({ message: error.message });
           }
 
-          req.proxyRequest?.abort();
+          req.proxyRequest?.destroy();
         })
         .finally(() => new Promise((resolve) => setTimeout(resolve, opts?.requestInterval || 0)));
     });
