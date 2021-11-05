@@ -1,4 +1,4 @@
-# GitHub Proxy Server
+# 🖥️ GitHub Proxy Server
 
 <br/><p align="center"><em>
 GitHub Proxy Server is a tool to support developers and researchers make requests to GitHub API (REST or GraphQL) by automatically managing access tokens and client requests to avoid triggering the GitHub API abuse detection mechanisms.
