@@ -15,11 +15,10 @@ GitHub Proxy Server is a tool to support developers and researchers make request
 **How it works?**
 
 <p align="center">
-  <figure>
-    <img src="architecture.png" alt="GitHub Proxy Server" width="200"/>
-    <figcaption>Proxy Server Architecture</figcaption>
-  </figure>
+  <img src="architecture.png" alt="GitHub Proxy Server" width="200"/>
+  
 </p>
+<p align="center">Proxy Server Architecture</p>
 
 ## Features:
 
@@ -46,19 +45,19 @@ yarn global add @hsborges/github-proxy-server
 To use this tool you need to provide at least one GitHub access token:
 
 ```bash
-github-proxy-server -p 8080 -t <access_token>
+github-proxy-server -p 3000 -t <access_token>
 ```
 
 Or you can provide a file with several access token (one per line):
 
 ```bash
-github-proxy-server -p 8080 --tokens <tokens.txt>
+github-proxy-server -p 3000 --tokens <tokens.txt>
 ```
 
-After that, just make the requests to http://localhost:8080 instead of https://api.github.com. For example:
+After that, just make the requests to http://localhost:3000 instead of https://api.github.com. For example:
 
 ```bash
-curl -s http://localhost:8080/users/hsborges 2>&1
+curl -s http://localhost:3000/users/hsborges 2>&1
 ```
 
 To more usage information, use the option `--help`.
