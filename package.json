@@ -13,7 +13,8 @@
     "commit": "git-cz",
     "lint": "eslint . --ext .ts",
     "build": "rm -rf dist/* && tsc",
-    "prepublish": "yarn build",
+    "install": "npm run build",
+    "prepublishOnly": "npm run build",
     "prettier": "prettier --write --config .prettierrc.yml --ignore-path .prettierignore  '**/*.ts'"
   },
   "bin": {
