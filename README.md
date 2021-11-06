@@ -1,22 +1,21 @@
 # 🖥️ GitHub Proxy Server
 
 <br/><p align="center"><em>
-GitHub Proxy Server is a tool to support developers and researchers make requests to GitHub API (REST or GraphQL) by automatically managing access tokens and client requests to avoid triggering the GitHub API abuse detection mechanisms.
+GitHub Proxy Server is a tool to support developers and researchers collect massive amount of data from GitHub API (REST or GraphQL) by automatically managing access tokens and client requests to avoid triggering the GitHub API abuse detection mechanisms.
 </em></p><br/>
 
-**Why should I use it?** GitHub API has a limited number of requests per client and implements several mechanisms to detect user abuses. Thus, users must handle these restrictions in their applications. In this sense, GitHub Proxy Server is a tool that abstracts these problems through a proxy server.
+**Why should I use it?** GitHub API has a limited number of requests per client and implements several mechanisms to detect user abuses. Thus, users must handle these restrictions in their applications. GitHub Proxy Server is a tool that abstracts these problems by means of a proxy server.
 
 **When should I use it?** This tool is intended to be used by developers and researches that need to perform massive data collection of public repositories using both REST and GraphQL APIs.
 
 **When should I <ins>not</ins> use it?** If you need to deal with private information of users and repositories this tool is not for you (see [limitations section](#limitations)).
 
-**Can I use it with other libs?** Yes, as long they allow the users setup the proxy server as target (see [samples](samples)).
+**Can I use it with other libs?** Yes, as long they allow the users setup the proxy server as base url (see [samples](samples)).
 
 **How it works?**
 
 <p align="center">
   <img src="architecture.png" alt="GitHub Proxy Server" width="350px"/>
-  
 </p>
 <p align="center">Proxy Server Architecture</p>
 
@@ -48,7 +47,7 @@ To use this tool you need to provide at least one GitHub access token:
 github-proxy-server -p 3000 -t <access_token>
 ```
 
-Or you can provide a file with several access token (one per line):
+Or provide a file with several access token (one per line):
 
 ```bash
 github-proxy-server -p 3000 --tokens <tokens.txt>
