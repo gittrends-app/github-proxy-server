@@ -20,7 +20,7 @@
     "github-proxy-server": "./dist/index.js"
   },
   "publishConfig": {
-    "registry": "https://registry.npmjs.org",
+    "registry": "https://npm.pkg.github.com",
     "access": "public"
   },
   "np": {
