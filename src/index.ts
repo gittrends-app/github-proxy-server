@@ -10,11 +10,11 @@ import statusMonitor from 'express-status-monitor';
 import { existsSync, readFileSync } from 'fs';
 import https from 'https';
 import { address } from 'ip';
-import { compact, pick, uniq } from 'lodash';
+import { compact, isNil, negate, pick, uniq } from 'lodash';
 import { resolve } from 'path';
 
 import ProxyLogger from './logger';
-import ProxyMiddleware from './middleware';
+import ProxyMiddleware, { ProxyMiddlewareOpts } from './middleware';
 import { version } from './package.json';
 
 // parse tokens from input
@@ -66,6 +66,10 @@ program
   .option('--request-interval <interval>', 'Interval between requests (ms)', Number, 250)
   .option('--request-timeout <timeout>', 'Request timeout (ms)', Number, 20000)
   .option('--min-remaining <number>', 'Stop using token on', Number, 100)
+  .option('--clustering', 'Enable clustering mode (require redis)')
+  .option('--clustering-redis-host <host>', '(clustering) redis host', 'localhost')
+  .option('--clustering-redis-port <port>', '(clustering) redis port', Number, 6379)
+  .option('--clustering-redis-db <db>', '(clustering) redis db', Number, 0)
   .option('--silent', 'Dont show requests outputs')
   .version(version, '-v, --version', 'output the current version')
   .parse();
@@ -85,10 +89,17 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
 
   const tokens = compact([...options.token, ...(options.tokens || [])]);
 
-  const middlewareOpts = {
+  const middlewareOpts: ProxyMiddlewareOpts = {
     requestInterval: options.requestInterval,
     requestTimeout: options.requestTimeout,
-    minRemaining: options.minRemaining
+    minRemaining: options.minRemaining,
+    clustering: options.clustering
+      ? {
+          host: options.clusteringRedisHost,
+          port: options.clusteringRedisPort,
+          db: options.clusteringRedisDb
+        }
+      : undefined
   };
 
   const app = express();
@@ -141,8 +152,13 @@ if (!options.token.length && !(options.tokens && options.tokens.length)) {
     );
     consola.success(
       `${chalk.bold('Options')}: %s`,
-      Object.entries({ ...middlewareOpts, ...pick(options, ['api']) })
-        .sort((a: string[], b: string[]) => (a[0] > b[0] ? 1 : -1))
+      Object.entries({
+        ...middlewareOpts,
+        clustering: !!middlewareOpts.clustering,
+        ...pick(options, ['api'])
+      })
+        .filter(([, vaue]) => negate(isNil)(vaue))
+        .sort((a: [string, unknown], b: [string, unknown]) => (a[0] > b[0] ? 1 : -1))
         .map(([k, v]) => `${k}: ${chalk.greenBright(v)}`)
         .join(', ')
     );

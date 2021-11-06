@@ -17,6 +17,16 @@ export class ProxyError extends Error {
   }
 }
 
+type ClientOpts = {
+  requestTimeout?: number;
+  requestInterval?: number;
+  clustering?: {
+    host: string;
+    port: number;
+    db: number;
+  };
+};
+
 class Client extends Readable {
   readonly queue: Bottleneck;
 
@@ -29,7 +39,7 @@ class Client extends Readable {
   reset: number;
   resetTimeout?: ReturnType<typeof setTimeout>;
 
-  constructor(token: string, opts?: { requestTimeout?: number; requestInterval?: number }) {
+  constructor(token: string, opts?: ClientOpts) {
     super({ objectMode: true, read: () => null });
     this.token = token;
     this.remaining = 5000;
@@ -70,7 +80,23 @@ class Client extends Readable {
         .join(', ');
     });
 
-    this.queue = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    this.queue = new Bottleneck({
+      maxConcurrent: 1,
+      minTime: 0,
+      id: `proxy_server:${this.token}`,
+      ...(opts?.clustering
+        ? {
+            datastore: 'ioredis',
+            clearDatastore: false,
+            clientOptions: {
+              host: opts.clustering.host,
+              port: opts.clustering.port,
+              options: { db: opts.clustering.db }
+            },
+            timeout: opts.requestTimeout
+          }
+        : { datastore: 'local' })
+    });
 
     this.schedule = this.queue.wrap(async (req: Request, res: Response) => {
       if (req.destroyed) return Promise.all([req.destroy(), this.log()]);
@@ -133,29 +159,20 @@ class Client extends Readable {
   }
 }
 
-export type ProxyMiddlewareOpts = {
-  requestInterval?: number;
-  requestTimeout?: number;
+export type ProxyMiddlewareOpts = ClientOpts & {
   minRemaining?: number;
 };
+
 export default class ProxyMiddleware extends PassThrough {
   private readonly clients: Client[];
-  private readonly options: {
-    requestInterval: number;
-    requestTimeout: number;
-    minRemaining: number;
-  };
+  private readonly options: ProxyMiddlewareOpts;
 
   constructor(tokens: string[], opts?: ProxyMiddlewareOpts) {
     super({ objectMode: true });
 
     if (!tokens.length) throw new Error('At least one token is required!');
 
-    this.options = Object.assign(
-      { requestInterval: 250, requestTimeout: 20000, minRemaining: 0 },
-      opts
-    );
-
+    this.options = Object.assign({ requestInterval: 250, requestTimeout: 20000 }, opts);
     this.clients = uniq(tokens).map((token) => new Client(token, this.options));
     this.clients.forEach((client) => client.pipe(this, { end: false }));
   }
@@ -168,7 +185,7 @@ export default class ProxyMiddleware extends PassThrough {
         )
       : null;
 
-    if (!client || client.remaining <= this.options.minRemaining) {
+    if (!client || client.remaining <= (this.options.minRemaining ?? 0)) {
       res.status(503).json({
         message: 'Proxy Server: no requests available',
         reset: Math.min(...this.clients.map((client) => client.reset))

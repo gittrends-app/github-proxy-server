@@ -44,6 +44,7 @@
     "faker": "^5.5.3",
     "helmet": "^4.6.0",
     "http-proxy": "^1.18.1",
+    "ioredis": "^4.28.0",
     "ip": "^1.1.5",
     "lodash": "^4.17.21",
     "response-time": "^2.3.2",

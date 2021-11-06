@@ -65,16 +65,20 @@ To more usage information, use the option `--help`.
 Usage: index [options]
 
 Options:
-  -p, --port <port>              Port to start the proxy server (default: 3000)
-  -t, --token <token>            GitHub token to be used (default: [])
-  --api <api>                    API version to proxy requests (choices: "graphql", "rest", default: "graphql")
-  --tokens <file>                File containing a list of tokens
-  --request-interval <interval>  Interval between requests (ms) (default: 250)
-  --request-timeout <timeout>    Request timeout (ms) (default: 20000)
-  --min-remaining <number>       Stop using token on (default: 100)
-  --silent                       Dont show requests outputs
-  -v, --version                  output the current version
-  -h, --help                     display help for command
+  -p, --port <port>               Port to start the proxy server (default: 3000)
+  -t, --token <token>             GitHub token to be used (default: [])
+  --api <api>                     API version to proxy requests (choices: "graphql", "rest", default: "graphql")
+  --tokens <file>                 File containing a list of tokens
+  --request-interval <interval>   Interval between requests (ms) (default: 250)
+  --request-timeout <timeout>     Request timeout (ms) (default: 20000)
+  --min-remaining <number>        Stop using token on (default: 100)
+  --clustering                    Enable clustering mode (require redis)
+  --clustering-redis-host <host>  (clustering) redis host (default: "localhost")
+  --clustering-redis-port <port>  (clustering) redis port (default: 6379)
+  --clustering-redis-db <db>      (clustering) redis db (default: 0)
+  --silent                        Dont show requests outputs
+  -v, --version                   output the current version
+  -h, --help                      display help for command
 ```
 
 ## Limitations
