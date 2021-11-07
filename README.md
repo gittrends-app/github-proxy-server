@@ -34,9 +34,9 @@ GitHub Proxy Server is a tool to support developers and researchers collect mass
 You will need to install:
 
 ```bash
-npm install -g @hsborges/github-proxy-server
+npm install -g @gittrends-app/github-proxy-server
 # or
-yarn global add @hsborges/github-proxy-server
+yarn global add @gittrends-app/github-proxy-server
 ```
 
 ## Usage
@@ -56,7 +56,7 @@ github-proxy-server -p 3000 --tokens <tokens.txt>
 After that, just make the requests to http://localhost:3000 instead of https://api.github.com. For example:
 
 ```bash
-curl -s http://localhost:3000/users/hsborges 2>&1
+curl -s http://localhost:3000/users/gittrends-app 2>&1
 ```
 
 To more usage information, use the option `--help`.
