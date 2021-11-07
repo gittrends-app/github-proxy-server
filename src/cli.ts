@@ -4,7 +4,7 @@
 import chalk from 'chalk';
 import { Option, program } from 'commander';
 import consola from 'consola';
-import { config } from 'dotenv';
+import { config } from 'dotenv-override-true';
 import { EventEmitter } from 'events';
 import express from 'express';
 import statusMonitor from 'express-status-monitor';
