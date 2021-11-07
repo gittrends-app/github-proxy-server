@@ -1,14 +1,14 @@
 {
   "name": "@hsborges/github-proxy-server",
   "version": "5.0.1",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/middleware.js",
+  "types": "./dist/middleware.d.ts",
   "repository": "git@github.com:hsborges/github-proxy-server.git",
   "author": "Hudson Silva Borges <hudsonsilbor@gmail.com>",
   "license": "MIT",
   "scripts": {
-    "start": "node dist/index.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "start": "node dist/cli.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/cli.ts",
     "test": "jest",
     "commit": "git-cz",
     "lint": "eslint . --ext .ts",
@@ -18,7 +18,7 @@
     "prettier": "prettier --write --config .prettierrc.yml --ignore-path .prettierignore  '**/*.ts'"
   },
   "bin": {
-    "github-proxy-server": "./dist/index.js"
+    "github-proxy-server": "./dist/cli.js"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
