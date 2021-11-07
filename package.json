@@ -13,6 +13,7 @@
     "commit": "git-cz",
     "lint": "eslint . --ext .ts",
     "build": "rm -rf dist/* && tsc && npm run add-version",
+    "pkg": "npm run build && pkg .",
     "install": "npm run build",
     "prepublishOnly": "npm run build",
     "prettier": "prettier --write --config .prettierrc.yml --ignore-path .prettierignore  '**/*.ts'",
@@ -82,6 +83,7 @@
     "get-port": "^5.1.1",
     "jest": "^27.1.1",
     "np": "^7.5.0",
+    "pkg": "^5.4.1",
     "prettier": "^2.4.0",
     "ts-jest": "^27.0.5",
     "ts-node": "^10.2.1",
@@ -92,5 +94,9 @@
     "commitizen": {
       "path": "./node_modules/cz-conventional-changelog"
     }
+  },
+  "pkg": {
+    "assets": "dist/.env.version",
+    "outputPath": "bin"
   }
 }
