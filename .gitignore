@@ -108,3 +108,4 @@ typings/
 .AppleDouble
 .LSOverride
 bin/
+dist/**/*.spec.*
