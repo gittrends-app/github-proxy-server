@@ -17,7 +17,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const chalk_1 = __importDefault(require("chalk"));
 const commander_1 = require("commander");
 const consola_1 = __importDefault(require("consola"));
-const dotenv_1 = require("dotenv");
+const dotenv_override_true_1 = require("dotenv-override-true");
 const events_1 = require("events");
 const express_1 = __importDefault(require("express"));
 const express_status_monitor_1 = __importDefault(require("express-status-monitor"));
@@ -28,7 +28,7 @@ const lodash_1 = require("lodash");
 const path_1 = require("path");
 const logger_1 = __importDefault(require("./logger"));
 const middleware_1 = __importDefault(require("./middleware"));
-(0, dotenv_1.config)({ path: (0, path_1.resolve)(__dirname, '.env.version') });
+(0, dotenv_override_true_1.config)({ path: (0, path_1.resolve)(__dirname, '.env.version') });
 // parse tokens from input
 function tokensParser(text) {
     return text
