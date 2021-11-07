@@ -4,6 +4,7 @@
 import chalk from 'chalk';
 import { Option, program } from 'commander';
 import consola from 'consola';
+import { config } from 'dotenv';
 import { EventEmitter } from 'events';
 import express from 'express';
 import statusMonitor from 'express-status-monitor';
@@ -15,7 +16,8 @@ import { resolve } from 'path';
 
 import ProxyLogger from './logger';
 import ProxyMiddleware, { ProxyMiddlewareOpts } from './middleware';
-import { version } from './package.json';
+
+config({ path: resolve(__dirname, '.env.version') });
 
 // parse tokens from input
 function tokensParser(text: string): string[] {
@@ -71,7 +73,7 @@ program
   .option('--clustering-redis-port <port>', '(clustering) redis port', Number, 6379)
   .option('--clustering-redis-db <db>', '(clustering) redis db', Number, 0)
   .option('--silent', 'Dont show requests outputs')
-  .version(version, '-v, --version', 'output the current version')
+  .version(process.env.npm_package_version || '?', '-v, --version', 'output the current version')
   .parse();
 
 const options = program.opts();
