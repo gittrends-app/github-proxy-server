@@ -107,5 +107,4 @@ typings/
 .DS_Store
 .AppleDouble
 .LSOverride
-bin/
 dist/**/*.spec.*
