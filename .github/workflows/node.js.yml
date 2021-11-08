@@ -29,5 +29,4 @@ jobs:
     - name: Use Git Auto-Commit Action
       uses: stefanzweifel/git-auto-commit-action@v4
       with:
-        commit_message: (auto)update 'dist' folder
-        file_pattern: dist/*
+        commit_message: (auto)update 'dist' files
