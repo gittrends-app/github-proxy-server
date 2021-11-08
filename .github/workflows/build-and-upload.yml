@@ -1,4 +1,4 @@
-name: Build source
+name: Build + S3 sync
 
 on:
   push:
@@ -30,3 +30,13 @@ jobs:
         with:
           commit_message: (auto)update 'dist' files
           file_pattern: dist
+      - run: yarn pkg
+      - name: Use Sync S3 Bucket
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl public-read --follow-symlinks --delete
+        env:
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SOURCE_DIR: 'bin'

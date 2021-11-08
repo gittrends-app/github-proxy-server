@@ -39,6 +39,8 @@ npm install -g gittrends-app/github-proxy-server
 yarn global add gittrends-app/github-proxy-server
 ```
 
+Alternatively, you can also download the binary for [Linux](https://github-proxy-server.s3.amazonaws.com/github-proxy-server-linux), [MacOS](https://github-proxy-server.s3.amazonaws.com/github-proxy-server-macos), and [Windows](https://github-proxy-server.s3.amazonaws.com/github-proxy-server-windows).
+
 ## Usage
 
 To use this tool you need to provide at least one GitHub access token:
