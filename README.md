@@ -34,9 +34,9 @@ GitHub Proxy Server is a tool to support developers and researchers collect mass
 You will need to install:
 
 ```bash
-npm install -g @gittrends-app/github-proxy-server
+npm install -g gittrends-app/github-proxy-server
 # or
-yarn global add @gittrends-app/github-proxy-server
+yarn global add gittrends-app/github-proxy-server
 ```
 
 ## Usage
