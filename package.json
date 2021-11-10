@@ -9,11 +9,13 @@
   "scripts": {
     "start": "node dist/cli.js",
     "dev": "ts-node-dev --respawn --transpile-only src/cli.ts",
-    "test": "jest",
+    "dev-no-reload": "ts-node --transpile-only src/cli.ts",
+    "test": "jest --no-cache --coverage --forceExit",
+    "test:detectOpenHandles": "jest --no-cache --coverage --runInBand --detectOpenHandles",
     "commit": "git-cz",
-    "lint": "eslint . --ext .ts",
+    "lint": "eslint src --ext .ts",
     "build": "rm -rf dist/* && tsc && npm run add-version",
-    "pkg": "npm run build && pkg .",
+    "pkg": "npm run build && pkg . && chmod +x bin/*",
     "prepublishOnly": "npm run build && git add dist",
     "prettier": "prettier --write --config .prettierrc.yml --ignore-path .prettierignore  '**/*.ts'",
     "version": "node -e 'console.log(process.env.npm_package_version)'",
@@ -21,10 +23,6 @@
   },
   "bin": {
     "github-proxy-server": "./dist/cli.js"
-  },
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "access": "public"
   },
   "np": {
     "yarn": true,
@@ -82,9 +80,11 @@
     "eslint-plugin-prettier": "^4.0.0",
     "get-port": "^5.1.1",
     "jest": "^27.1.1",
+    "nock": "^13.2.0",
     "np": "^7.5.0",
     "pkg": "^5.4.1",
     "prettier": "^2.4.0",
+    "tmp-promise": "^3.0.3",
     "ts-jest": "^27.0.5",
     "ts-node": "^10.2.1",
     "ts-node-dev": "^1.1.8",
