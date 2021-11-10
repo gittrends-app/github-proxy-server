@@ -34,7 +34,7 @@ jobs:
         uses: coverallsapp/github-action@master
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          base-path: src
+          path-to-lcov: ./src/coverage/lcov.info
       - run: yarn pkg
       - name: Use Sync S3 Bucket
         uses: jakejarvis/s3-sync-action@master
