@@ -30,6 +30,11 @@ jobs:
         with:
           commit_message: (auto)update 'dist' files
           file_pattern: dist
+      - name: Coveralls
+        uses: coverallsapp/github-action@master
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          base-path: src
       - run: yarn pkg
       - name: Use Sync S3 Bucket
         uses: jakejarvis/s3-sync-action@master
