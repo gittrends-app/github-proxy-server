@@ -1,5 +1,7 @@
 # 🖥️ GitHub Proxy Server
 
+[![Coverage Status](https://coveralls.io/repos/github/gittrends-app/github-proxy-server/badge.svg)](https://coveralls.io/github/gittrends-app/github-proxy-server)
+
 <br/><p align="center"><em>
 GitHub Proxy Server is a tool to support developers and researchers collect massive amount of data from GitHub API (REST or GraphQL) by automatically managing access tokens and client requests to avoid triggering the GitHub API abuse detection mechanisms.
 </em></p><br/>
