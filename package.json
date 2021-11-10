@@ -28,6 +28,9 @@
     "yarn": true,
     "tests": true
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist",
     "architecture.png"
