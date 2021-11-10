@@ -1,10 +1,11 @@
 # 🖥️ GitHub Proxy Server
 
+[![Build + S3 sync](https://github.com/gittrends-app/github-proxy-server/actions/workflows/build-and-upload.yml/badge.svg?branch=master)](https://github.com/gittrends-app/github-proxy-server/actions/workflows/build-and-upload.yml)
 [![Coverage Status](https://coveralls.io/repos/github/gittrends-app/github-proxy-server/badge.svg)](https://coveralls.io/github/gittrends-app/github-proxy-server)
 
-<br/><p align="center"><em>
-GitHub Proxy Server is a tool to support developers and researchers collect massive amount of data from GitHub API (REST or GraphQL) by automatically managing access tokens and client requests to avoid triggering the GitHub API abuse detection mechanisms.
-</em></p><br/>
+> GitHub Proxy Server is a tool to support developers and researchers collect massive amount of data from GitHub API (REST or GraphQL) by automatically managing access tokens and client requests to avoid triggering the GitHub API abuse detection mechanisms.
+
+<br/>
 
 **Why should I use it?** GitHub API has a limited number of requests per client and implements several mechanisms to detect user abuses. Thus, users must handle these restrictions in their applications. GitHub Proxy Server is a tool that abstracts these problems by means of a proxy server.
 
