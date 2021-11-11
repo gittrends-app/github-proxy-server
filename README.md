@@ -1,6 +1,6 @@
 # 🖥️ GitHub Proxy Server
 
-[![Build + S3 sync](https://github.com/gittrends-app/github-proxy-server/actions/workflows/build-and-upload.yml/badge.svg?branch=master)](https://github.com/gittrends-app/github-proxy-server/actions/workflows/build-and-upload.yml)
+[![Build + S3 sync](https://github.com/gittrends-app/github-proxy-server/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/gittrends-app/github-proxy-server/actions/workflows/build.yml)
 [![Coverage Status](https://coveralls.io/repos/github/gittrends-app/github-proxy-server/badge.svg)](https://coveralls.io/github/gittrends-app/github-proxy-server)
 [![GitHub version](https://badge.fury.io/gh/gittrends-app%2Fgithub-proxy-server.svg)](https://badge.fury.io/gh/gittrends-app%2Fgithub-proxy-server)
 ![GitHub](https://img.shields.io/github/license/gittrends-app/github-proxy-server)
