@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from '@jest/globals';
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from '@jest/globals';
 import axios, { AxiosInstance } from 'axios';
 import { exec } from 'child_process';
 import { writeFileSync } from 'fs';
