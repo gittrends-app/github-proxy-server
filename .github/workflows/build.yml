@@ -1,10 +1,18 @@
-name: Build + S3 sync
+name: Build
 
 on:
   push:
     branches: [master]
+    paths:
+      - 'src'
+      - 'types'
+      - 'tsconfig.json'
   pull_request:
     branches: [master]
+    paths:
+      - 'src'
+      - 'types'
+      - 'tsconfig.json'
   workflow_dispatch:
 
 jobs:
@@ -17,25 +25,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v2
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'yarn'
-      - run: yarn install
-      - run: yarn test
+
+      - run: yarn
+
       - run: yarn build
+
       - name: Use Git Auto-Commit Action
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
           commit_message: (auto)update 'dist' files
           file_pattern: dist
-      - name: Coveralls
-        uses: coverallsapp/github-action@master
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path-to-lcov: ./src/coverage/lcov.info
+
       - run: yarn pkg
+
       - name: Use Sync S3 Bucket
         uses: jakejarvis/s3-sync-action@master
         with:

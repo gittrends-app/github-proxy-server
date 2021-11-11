@@ -1,0 +1,44 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src'
+      - 'types'
+      - 'jest.config.js'
+      - 'tsconfig.json'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src'
+      - 'types'
+      - 'jest.config.js'
+      - 'tsconfig.json'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [16.x]
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v2
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'yarn'
+
+      - run: yarn
+
+      - run: yarn test
+
+      - name: Coveralls
+        uses: coverallsapp/github-action@master
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: ./src/coverage/lcov.info
