@@ -56,7 +56,7 @@ export class ProxyLogTransform extends Transform {
       pending: chunk.pending,
       remaining: chunk.remaining,
       reset: dayjs.unix(chunk.reset).fromNow(),
-      status: chalk[/[45]\d{2}/i.test(`${chunk.status}`) ? 'redBright' : 'green'](chunk.status),
+      status: chalk[/(?![23])\d{3}/i.test(`${chunk.status}`) ? 'redBright' : 'green'](chunk.status),
       duration: `${chunk.duration / 1000}s`
     };
 
