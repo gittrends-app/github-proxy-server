@@ -63,7 +63,7 @@ class ProxyLogTransform extends stream_1.Transform {
             pending: chunk.pending,
             remaining: chunk.remaining,
             reset: dayjs_1.default.unix(chunk.reset).fromNow(),
-            status: chalk_1.default[/[45]\d{2}/i.test(`${chunk.status}`) ? 'redBright' : 'green'](chunk.status),
+            status: chalk_1.default[/(?![23])\d{3}/i.test(`${chunk.status}`) ? 'redBright' : 'green'](chunk.status),
             duration: `${chunk.duration / 1000}s`
         };
         if (!this.started) {
