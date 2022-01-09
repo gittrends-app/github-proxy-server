@@ -16,11 +16,11 @@
     "lint": "eslint src --ext .ts",
     "build": "rm -rf dist/* && tsc && npm run add-version",
     "pkg": "npm run build && pkg . && chmod +x bin/*",
+    "prepare": "husky install",
     "prepublishOnly": "npm run build && git add dist",
     "prettier": "prettier --write --config .prettierrc.yml --ignore-path .prettierignore  '**/*.ts'",
     "version": "node -e 'console.log(process.env.npm_package_version)'",
-    "add-version": "echo \"npm_package_version=$(node -e 'console.log(process.env.npm_package_version)')\" > dist/.env.version",
-    "prepare": "husky install"
+    "add-version": "echo \"npm_package_version=$(node -e 'console.log(process.env.npm_package_version)')\" > dist/.env.version"
   },
   "bin": {
     "github-proxy-server": "./dist/cli.js"
@@ -87,7 +87,7 @@
     "eslint-plugin-import": "^2.25.3",
     "eslint-plugin-prettier": "^4.0.0",
     "get-port": "^5.1.1",
-    "husky": "^7.0.0",
+    "husky": "^7.0.4",
     "jest": "^27.3.1",
     "nock": "^13.2.0",
     "np": "^7.5.0",
