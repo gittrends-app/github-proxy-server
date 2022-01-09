@@ -17,7 +17,6 @@
     "build": "rm -rf dist/* && tsc && npm run add-version",
     "pkg": "npm run build && pkg . && chmod +x bin/*",
     "prepare": "husky install",
-    "prepublishOnly": "npm run build && git add dist",
     "prettier": "prettier --write --config .prettierrc.yml --ignore-path .prettierignore  '**/*.ts'",
     "version": "node -e 'console.log(process.env.npm_package_version)'",
     "add-version": "echo \"npm_package_version=$(node -e 'console.log(process.env.npm_package_version)')\" > dist/.env.version"
