@@ -4,14 +4,14 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src'
-      - 'types'
+      - 'src/**'
+      - 'types/**'
       - 'tsconfig.json'
   pull_request:
     branches: [master]
     paths:
-      - 'src'
-      - 'types'
+      - 'src/**'
+      - 'types/**'
       - 'tsconfig.json'
   workflow_dispatch:
 
@@ -29,13 +29,10 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'yarn'
-      - run: yarn
-      - run: yarn build
-      - name: Use Git Auto-Commit Action
-        uses: stefanzweifel/git-auto-commit-action@v4
-        with:
-          commit_message: (auto)update 'dist' files
-          file_pattern: dist
+      - name: Install dependencies
+        run: yarn
+      - name: Build source code
+        run: yarn build
       - name: Create executables
         if: steps.auto-commit-action.outputs.changes_detected == 'true'
         run: yarn pkg
