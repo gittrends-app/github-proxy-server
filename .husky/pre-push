@@ -1,9 +1,0 @@
-#!/bin/sh
-. "$(dirname "$0")/_/husky.sh"
-
-npm run build
-git add dist
-if ! git diff-index --quiet HEAD; then
-  git commit -m 'build(husky): husk auto-commit' --no-verify
-  git push --no-verify
-fi
