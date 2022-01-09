@@ -3,5 +3,5 @@
 
 npm run build
 git add dist
-git commit -m 'build(husky): husk auto-commit'
+git diff-index --quiet HEAD dist || git commit -m 'build(husky): husk auto-commit'
 git push
