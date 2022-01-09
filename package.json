@@ -27,7 +27,8 @@
   },
   "np": {
     "yarn": true,
-    "tests": true
+    "tests": true,
+    "message": "chore: v%s"
   },
   "publishConfig": {
     "access": "public",
