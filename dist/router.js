@@ -12,7 +12,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ProxyMiddlewareResponse = void 0;
+exports.ProxyRouterResponse = void 0;
 /* Author: Hudson S. Borges */
 const bottleneck_1 = __importDefault(require("bottleneck"));
 const faker_1 = __importDefault(require("faker"));
@@ -20,14 +20,14 @@ const http_proxy_1 = require("http-proxy");
 const lodash_1 = require("lodash");
 const stream_1 = require("stream");
 faker_1.default.seed(12345);
-class Client extends stream_1.Readable {
+class ProxyWorker extends stream_1.Readable {
     constructor(token, opts) {
         super({ objectMode: true, read: () => null });
         this.limit = 5000;
         this.token = token;
         this.remaining = 5000;
         this.reset = (Date.now() + 1000 * 60 * 60) / 1000;
-        this.middleware = (0, http_proxy_1.createProxyServer)({
+        this.proxy = (0, http_proxy_1.createProxyServer)({
             target: 'https://api.github.com',
             headers: { Authorization: `token ${token}` },
             proxyTimeout: opts.requestTimeout,
@@ -35,11 +35,11 @@ class Client extends stream_1.Readable {
             xfwd: true,
             changeOrigin: true
         });
-        this.middleware.on('proxyReq', (proxyReq, req) => {
+        this.proxy.on('proxyReq', (proxyReq, req) => {
             req.startedAt = new Date();
             req.proxyRequest = proxyReq;
         });
-        this.middleware.on('proxyRes', (proxyRes, req) => {
+        this.proxy.on('proxyRes', (proxyRes, req) => {
             this.updateLimits(Object.assign({ status: `${proxyRes.statusCode}` }, proxyRes.headers));
             this.log(proxyRes.statusCode, req.startedAt);
             proxyRes.headers['access-control-expose-headers'] = (proxyRes.headers['access-control-expose-headers'] || '')
@@ -66,18 +66,17 @@ class Client extends stream_1.Readable {
             }
             : { datastore: 'local' })));
         this.schedule = this.queue.wrap((req, res) => __awaiter(this, void 0, void 0, function* () {
-            if (req.destroyed)
-                return Promise.all([req.destroy(), this.log()]);
+            if (req.socket.destroyed)
+                return this.log();
             yield new Promise((resolve, reject) => {
-                res.on('close', resolve);
-                this.middleware.web(req, res, undefined, (error) => reject(error));
+                req.socket.on('close', resolve);
+                this.proxy.web(req.raw, res.raw, undefined, (error) => reject(error));
             })
                 .catch((error) => __awaiter(this, void 0, void 0, function* () {
                 var _a;
-                this.log(ProxyMiddlewareResponse.PROXY_ERROR, req.startedAt);
-                if (!(res.destroyed || res.headersSent)) {
-                    res.status(ProxyMiddlewareResponse.PROXY_ERROR).json(error);
-                }
+                this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
+                if (!req.socket.destroyed && !req.socket.writableFinished)
+                    res.status(ProxyRouterResponse.PROXY_ERROR).send(error);
                 (_a = req.proxyRequest) === null || _a === void 0 ? void 0 : _a.destroy();
             }))
                 .finally(() => new Promise((resolve) => setTimeout(resolve, opts.requestInterval)));
@@ -104,15 +103,13 @@ class Client extends stream_1.Readable {
         }
     }
     log(status, startedAt) {
-        return __awaiter(this, void 0, void 0, function* () {
-            this.push({
-                token: this.token.substring(0, 4),
-                pending: this.queued,
-                remaining: this.remaining,
-                reset: this.reset,
-                status: status || '-',
-                duration: startedAt ? Date.now() - startedAt.getTime() : 0
-            });
+        this.push({
+            token: this.token.substring(0, 4),
+            pending: this.queued,
+            remaining: this.remaining,
+            reset: this.reset,
+            status: status || '-',
+            duration: startedAt ? Date.now() - startedAt.getTime() : 0
         });
     }
     get pending() {
@@ -123,13 +120,17 @@ class Client extends stream_1.Readable {
         const { RECEIVED, QUEUED } = this.queue.counts();
         return RECEIVED + QUEUED;
     }
+    destroy(error) {
+        this.proxy.close();
+        super.destroy(error);
+    }
 }
-var ProxyMiddlewareResponse;
-(function (ProxyMiddlewareResponse) {
-    ProxyMiddlewareResponse[ProxyMiddlewareResponse["PROXY_ERROR"] = 600] = "PROXY_ERROR";
-    ProxyMiddlewareResponse[ProxyMiddlewareResponse["NO_REQUESTS"] = 601] = "NO_REQUESTS";
-})(ProxyMiddlewareResponse = exports.ProxyMiddlewareResponse || (exports.ProxyMiddlewareResponse = {}));
-class ProxyMiddleware extends stream_1.PassThrough {
+var ProxyRouterResponse;
+(function (ProxyRouterResponse) {
+    ProxyRouterResponse[ProxyRouterResponse["PROXY_ERROR"] = 600] = "PROXY_ERROR";
+    ProxyRouterResponse[ProxyRouterResponse["NO_REQUESTS"] = 600] = "NO_REQUESTS";
+})(ProxyRouterResponse = exports.ProxyRouterResponse || (exports.ProxyRouterResponse = {}));
+class ProxyRouter extends stream_1.PassThrough {
     constructor(tokens, opts) {
         super({ objectMode: true });
         if (!tokens.length)
@@ -140,19 +141,20 @@ class ProxyMiddleware extends stream_1.PassThrough {
     }
     // function to select the best client and queue request
     schedule(req, res) {
-        const client = (0, lodash_1.shuffle)(this.clients).reduce((selected, client) => !selected || client.pending < selected.pending ? client : selected, null);
-        if (!client || client.remaining <= this.options.minRemaining) {
-            res.status(ProxyMiddlewareResponse.NO_REQUESTS).json({
-                message: 'Proxy Server: no requests available',
-                reset: (0, lodash_1.min)(this.clients.map((client) => client.reset))
-            });
-            return;
-        }
-        client.schedule(req, res);
+        return __awaiter(this, void 0, void 0, function* () {
+            const client = (0, lodash_1.shuffle)(this.clients).reduce((selected, client) => !selected || client.pending < selected.pending ? client : selected, null);
+            if (!client || client.remaining <= this.options.minRemaining) {
+                return res.status(ProxyRouterResponse.NO_REQUESTS).send({
+                    message: 'Proxy Server: no requests available',
+                    reset: (0, lodash_1.min)(this.clients.map((client) => client.reset))
+                });
+            }
+            return client.schedule(req, res);
+        });
     }
     removeToken(token) {
         this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1).forEach((client) => {
-            client.middleware.close();
+            client.proxy.close();
             client.queue.stop();
             client.queue.disconnect();
             client.destroy();
@@ -161,15 +163,16 @@ class ProxyMiddleware extends stream_1.PassThrough {
     addToken(token) {
         if (this.clients.map((client) => client.token).includes(token))
             return;
-        const client = new Client(token, this.options);
+        const client = new ProxyWorker(token, this.options);
         client.pipe(this, { end: false });
         this.clients.push(client);
     }
     get tokens() {
         return this.clients.map((client) => client.token);
     }
-    destroy() {
+    destroy(error) {
         this.clients.forEach((client) => this.removeToken(client.token));
+        super.destroy(error);
     }
 }
-exports.default = ProxyMiddleware;
+exports.default = ProxyRouter;

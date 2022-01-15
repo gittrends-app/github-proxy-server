@@ -1,9 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from '@jest/globals';
 import axios, { AxiosInstance } from 'axios';
 import { exec } from 'child_process';
+import { FastifyInstance } from 'fastify';
 import { writeFileSync } from 'fs';
 import getPort from 'get-port';
-import { Server } from 'http';
 import { address } from 'ip';
 import { repeat, times } from 'lodash';
 import nock from 'nock';
@@ -104,7 +104,7 @@ describe('Test cli utils', () => {
   describe(`Test create proxy server`, () => {
     let params: CliOpts;
     let port: number;
-    let server: Server;
+    let fastify: FastifyInstance;
     let client: AxiosInstance;
 
     beforeAll(() => {
@@ -140,12 +140,14 @@ describe('Test cli utils', () => {
     });
 
     afterEach(async () => {
-      if (server?.listening) {
-        await new Promise<void>((resolve, reject) =>
-          server?.close((error) => (error ? reject(error) : resolve()))
-        );
-      }
+      if (fastify) await fastify.close();
     });
+
+    async function createLocalProxyServer(args: CliOpts) {
+      const app = createProxyServer(args);
+      await app.listen(port, address());
+      return app;
+    }
 
     test('it should throw an error if no valid tokens are provided', async () => {
       params.tokens = ['invalid'];
@@ -153,7 +155,7 @@ describe('Test cli utils', () => {
     });
 
     test(`it should accept only GET requests for ${APIVersion.REST}`, async () => {
-      server = createProxyServer({ ...params, api: APIVersion.REST }).listen(port);
+      fastify = await createLocalProxyServer({ ...params, api: APIVersion.REST });
       await expect(client.get('/')).resolves.toBeDefined();
       await expect(client.post('/')).rejects.toThrowError();
       await expect(client.put('/')).rejects.toThrowError();
@@ -161,7 +163,7 @@ describe('Test cli utils', () => {
     });
 
     test(`it should accept only POSTs to /graphql for ${APIVersion.GraphQL}`, async () => {
-      server = createProxyServer({ ...params, api: APIVersion.GraphQL }).listen(port);
+      fastify = await createLocalProxyServer({ ...params, api: APIVersion.GraphQL });
       await expect(client.post('/graphql')).resolves.toBeDefined();
       await expect(client.get('/')).rejects.toThrowError();
       await expect(client.put('/')).rejects.toThrowError();
@@ -169,12 +171,10 @@ describe('Test cli utils', () => {
     });
 
     test(`it should log the requests when enabled`, async () => {
-      const app = createProxyServer({ ...params, silent: false });
-
-      server = app.listen(port);
+      fastify = await createLocalProxyServer({ ...params, silent: false });
 
       const logs: string[] = [];
-      app.on('log', (data) => logs.push(data.toString()));
+      fastify.server.on('log', (data) => logs.push(data.toString()));
 
       await expect(client.get('/')).resolves.toBeDefined();
       expect(logs.length).toBeGreaterThan(0);
@@ -185,24 +185,24 @@ describe('Test cli utils', () => {
     });
 
     test(`it should disable logs when disabled`, async () => {
-      const app = createProxyServer({ ...params, silent: true });
-
-      server = app.listen(port);
+      fastify = await createLocalProxyServer({ ...params, silent: true });
 
       const logs: string[] = [];
-      app.on('log', (data) => logs.push(data.toString()));
+      fastify.server.on('log', (data) => logs.push(data.toString()));
 
       await expect(client.get('/')).resolves.toBeDefined();
       expect(logs.length).toBe(0);
     });
 
     test('it should warn when invalid token are detected', async () => {
-      const app = createProxyServer({ ...params, tokens: [repeat('i', 40)], silent: true });
-
-      server = app.listen(port);
+      fastify = await createLocalProxyServer({
+        ...params,
+        tokens: [repeat('i', 40)],
+        silent: true
+      });
 
       const warns: string[] = [];
-      app.on('warn', (data) => warns.push(data.toString()));
+      fastify.server.on('warn', (data) => warns.push(data.toString()));
 
       await new Promise((resolve) => setTimeout(resolve, 1000));
       expect(warns.length).toBe(1);
