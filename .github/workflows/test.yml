@@ -30,23 +30,8 @@ jobs:
           cache: 'yarn'
       - run: yarn
       - run: yarn test
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v2
-        with:
-          name: report
-          path: coverage-report
-
-  upload-report:
-    name: Upload coverage to Coveralls
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download math result for job 1
-        uses: actions/download-artifact@v2
-        with:
-          name: report
       - name: Coveralls
         uses: coverallsapp/github-action@master
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          path-to-lcov: ./coverage-report/lcov.info
+          path-to-lcov: ./src/coverage/lcov.info
