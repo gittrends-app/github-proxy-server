@@ -1,5 +1,24 @@
 #!/usr/bin/env node
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -23,15 +42,17 @@ const dayjs_1 = __importDefault(require("dayjs"));
 const relativeTime_1 = __importDefault(require("dayjs/plugin/relativeTime"));
 const dotenv_override_true_1 = require("dotenv-override-true");
 const events_1 = require("events");
-const express_1 = __importDefault(require("express"));
 const express_status_monitor_1 = __importDefault(require("express-status-monitor"));
+const fastify_1 = __importDefault(require("fastify"));
+const fastify_express_1 = __importDefault(require("fastify-express"));
+const fastify_formbody_1 = __importDefault(require("fastify-formbody"));
 const fs_1 = require("fs");
 const ip_1 = require("ip");
 const lodash_1 = require("lodash");
 const path_1 = require("path");
 const stream_1 = require("stream");
 const table_1 = require("table");
-const middleware_1 = __importDefault(require("./middleware"));
+const router_1 = __importStar(require("./router"));
 (0, dotenv_override_true_1.config)({ path: (0, path_1.resolve)(__dirname, '.env.version') });
 dayjs_1.default.extend(relativeTime_1.default);
 var APIVersion;
@@ -108,20 +129,32 @@ function readTokensFile(filename) {
 exports.readTokensFile = readTokensFile;
 function createProxyServer(options) {
     const tokens = (0, lodash_1.compact)(options.tokens).reduce((memo, token) => concatTokens(token, memo), []);
-    const app = (0, express_1.default)();
-    app.use((0, express_status_monitor_1.default)({
-        healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
+    const fastify = (0, fastify_1.default)({});
+    fastify.register(fastify_formbody_1.default).after(() => fastify.register(fastify_express_1.default).after(() => {
+        fastify.use((0, express_status_monitor_1.default)({
+            healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
+        }));
     }));
-    const proxy = new middleware_1.default(tokens, options);
-    if (options.api === APIVersion.GraphQL)
-        app.post('/graphql', proxy.schedule.bind(proxy));
-    else
-        app.get('/*', proxy.schedule.bind(proxy));
-    app.all('/*', (req, res) => {
-        res.status(401).json({ message: `Endpoint not supported for "${options.api}" api.` });
+    const proxy = new router_1.default(tokens, options);
+    const scheduler = (req, reply) => proxy.schedule(req, reply);
+    const defaultHandler = (req, res) => {
+        res
+            .status(router_1.ProxyRouterResponse.PROXY_ERROR)
+            .send({ message: `Endpoint not supported for "${options.api}" api.` });
+    };
+    fastify.route({
+        method: ['DELETE', 'PATCH', 'PUT'],
+        url: '/*',
+        handler: defaultHandler
     });
+    if (options.api === APIVersion.GraphQL) {
+        fastify.post('/graphql', scheduler).get('/*', defaultHandler);
+    }
+    else {
+        fastify.get('/*', scheduler).post('/*', defaultHandler);
+    }
     if (!options.silent)
-        proxy.pipe(new ProxyLogTransform().on('data', (data) => app.emit('log', data)));
+        proxy.pipe(new ProxyLogTransform().on('data', (data) => fastify.server.emit('log', data)));
     tokens.map((token) => axios_1.default
         .get('https://api.github.com/user', {
         headers: {
@@ -134,9 +167,9 @@ function createProxyServer(options) {
         if (((_a = error.response) === null || _a === void 0 ? void 0 : _a.status) !== 401)
             return;
         proxy.removeToken(token);
-        app.emit('warn', `Invalid token detected (${token}).`);
+        fastify.server.emit('warn', `Invalid token detected (${token}).`);
     }));
-    return app;
+    return fastify;
 }
 exports.createProxyServer = createProxyServer;
 // parse arguments from command line
@@ -185,11 +218,10 @@ if (require.main === module) {
                 },
             minRemaining: options.minRemaining
         };
-        const app = createProxyServer(appOptions)
+        const app = createProxyServer(appOptions);
+        app.server
             .on('warn', consola_1.default.warn)
-            .on('log', (data) => process.stdout.write(data.toString()));
-        const server = app
-            .listen(options.port)
+            .on('log', (data) => process.stdout.write(data.toString()))
             .on('listening', () => {
             const host = `http://${(0, ip_1.address)()}:${options.port}`;
             consola_1.default.success(`Proxy server running on ${host} (tokens: ${chalk_1.default.greenBright(tokens.length)})`);
@@ -205,16 +237,17 @@ if (require.main === module) {
         })
             .on('error', (error) => {
             consola_1.default.error(error);
-            server.close();
+            app.server.close();
             process.exit(1);
         });
+        yield app.listen(options.port, '0.0.0.0');
         process.on('SIGTERM', () => __awaiter(void 0, void 0, void 0, function* () {
             consola_1.default.info('SIGTERM signal received: closing HTTP server');
-            server.close(() => {
-                consola_1.default.success('Server closed');
-                process.exit(0);
-            });
-            setTimeout(() => process.exit(1), 10 * 1000);
+            app
+                .close()
+                .finally(() => consola_1.default.success('Server closed'))
+                .then(() => process.exit(0))
+                .catch(() => process.exit(1));
         }));
     }))();
 }

@@ -1,18 +1,16 @@
-import { afterEach, beforeEach, describe, expect, test } from '@jest/globals';
+import { afterAll, afterEach, beforeEach, describe, expect, test } from '@jest/globals';
 import axios, { AxiosInstance } from 'axios';
-import express from 'express';
+import Fastify, { FastifyInstance } from 'fastify';
 import getPort from 'get-port';
-import { Server } from 'http';
 import { address } from 'ip';
 import { range, repeat, times } from 'lodash';
 import nock from 'nock';
 
-import Middleware, { ProxyMiddlewareResponse } from './middleware';
+import Middleware, { ProxyRouterResponse } from './router';
 
 axios.defaults.adapter = require('axios/lib/adapters/http');
 
-let app: ReturnType<typeof express>;
-let proxyServer: Server;
+let fastify: FastifyInstance;
 let axiosClient: AxiosInstance;
 
 const localServerHost: string = address();
@@ -55,17 +53,13 @@ describe('Middleware core', () => {
     if (!nock.isActive()) nock.activate();
     scope = nock('https://api.github.com', { allowUnmocked: false }).persist();
 
-    app = express();
+    fastify = Fastify({});
 
     middleware = new Middleware([FAKE_TOKEN], { requestInterval, requestTimeout, minRemaining: 0 });
-    app.get('*', (req, res) => middleware.schedule(req, res));
+    fastify.get('*', (req, res) => middleware.schedule(req, res));
 
     const proxyServerPort = await getPort();
-    await new Promise((resolve, reject) => {
-      proxyServer = app.listen(proxyServerPort, localServerHost);
-      proxyServer.on('error', reject);
-      proxyServer.on('listening', resolve);
-    });
+    await fastify.listen(proxyServerPort, localServerHost);
 
     axiosClient = axios.create({ baseURL: `http://${localServerHost}:${proxyServerPort}` });
   });
@@ -76,10 +70,14 @@ describe('Middleware core', () => {
 
     middleware.destroy();
 
-    if (proxyServer.listening)
+    if (fastify.server.listening)
       await new Promise<void>((resolve, reject) =>
-        proxyServer.close((error) => (error ? reject(error) : resolve()))
+        fastify.server.close((error) => (error ? reject(error) : resolve()))
       );
+  });
+
+  afterAll(() => {
+    nock.abortPendingRequests();
   });
 
   describe('GitHub API is down or not reachable', () => {
@@ -91,9 +89,9 @@ describe('Middleware core', () => {
       });
     });
 
-    test(`it should respond with Proxy Server Error (${ProxyMiddlewareResponse.PROXY_ERROR})`, async () => {
+    test(`it should respond with Proxy Server Error (${ProxyRouterResponse.PROXY_ERROR})`, async () => {
       return axiosClient.get('/').catch((error) => {
-        expect(error.response?.status).toBe(ProxyMiddlewareResponse.PROXY_ERROR);
+        expect(error.response?.status).toBe(ProxyRouterResponse.PROXY_ERROR);
       });
     });
   });
@@ -114,7 +112,7 @@ describe('Middleware core', () => {
         });
     });
 
-    test(`it should respond with ${ProxyMiddlewareResponse.NO_REQUESTS} if no requests available`, async () => {
+    test(`it should respond with ${ProxyRouterResponse.NO_REQUESTS} if no requests available`, async () => {
       const waitInterval = 500;
 
       scope
@@ -131,14 +129,14 @@ describe('Middleware core', () => {
 
       await axiosClient
         .get('/reset')
-        .catch(({ response }) => expect(response.status).toBe(ProxyMiddlewareResponse.NO_REQUESTS));
+        .catch(({ response }) => expect(response.status).toBe(ProxyRouterResponse.NO_REQUESTS));
 
       await waitPromise(waitInterval);
 
       middleware.removeToken(FAKE_TOKEN);
       return axiosClient
         .get('/')
-        .catch(({ response }) => expect(response.status).toBe(ProxyMiddlewareResponse.NO_REQUESTS));
+        .catch(({ response }) => expect(response.status).toBe(ProxyRouterResponse.NO_REQUESTS));
     });
 
     test('it should restore rate limite on reset time', async () => {
@@ -201,7 +199,7 @@ describe('Middleware core', () => {
 
       return axiosClient
         .get('/')
-        .catch(({ response }) => expect(response.status).toBe(ProxyMiddlewareResponse.PROXY_ERROR));
+        .catch(({ response }) => expect(response.status).toBe(ProxyRouterResponse.PROXY_ERROR));
     });
 
     test('it should respond to broken connections', async () => {
@@ -209,7 +207,7 @@ describe('Middleware core', () => {
 
       return axiosClient
         .get('/')
-        .catch(({ response }) => expect(response.status).toBe(ProxyMiddlewareResponse.PROXY_ERROR));
+        .catch(({ response }) => expect(response.status).toBe(ProxyRouterResponse.PROXY_ERROR));
     });
 
     test('it should not break proxy when client disconnect', async () => {
@@ -227,27 +225,22 @@ describe('Middleware core', () => {
     test('it should not wait when client disconnected', async () => {
       scope.get('/').delay(250).reply(200).get('/no').reply(200);
 
-      const promises = [];
+      const promises: Promise<number>[] = [];
       const startedAt = Date.now();
 
       promises.push(axiosClient.get('/').then(() => Date.now()));
 
       const source = axios.CancelToken.source();
-      setTimeout(() => source.cancel('Operation canceled by the user.'), 50);
-      promises.push(
-        axiosClient
-          .get('/', { cancelToken: source.token })
-          .then(() => Promise.reject(new Error()))
-          .catch(() => Date.now())
-      );
+      source.cancel('Operation canceled by the user.');
+      expect(axiosClient.get('/', { cancelToken: source.token })).rejects.toBeDefined();
 
       promises.push(axiosClient.get('/no').then(() => Date.now()));
 
-      const [first, , third] = await Promise.all(promises);
+      const [first, second] = await Promise.all(promises);
 
       expect(first).toBeGreaterThanOrEqual(startedAt + 250);
-      expect(third).toBeGreaterThan(first + requestInterval);
-      expect(third).toBeLessThanOrEqual(first + requestInterval + 50);
+      expect(second).toBeGreaterThanOrEqual(first + requestInterval);
+      expect(second).toBeLessThan(first + requestInterval + 250);
     });
 
     test('it should balance the use of the tokens', async () => {

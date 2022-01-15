@@ -9,8 +9,10 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { config } from 'dotenv-override-true';
 import { EventEmitter } from 'events';
-import express from 'express';
 import statusMonitor from 'express-status-monitor';
+import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import fastifyExpress from 'fastify-express';
+import fastifyFormBody from 'fastify-formbody';
 import { existsSync, readFileSync } from 'fs';
 import { address } from 'ip';
 import { compact, isNil, isObjectLike, omit, omitBy, uniq } from 'lodash';
@@ -18,7 +20,7 @@ import { resolve } from 'path';
 import { Transform } from 'stream';
 import { TableUserConfig, getBorderCharacters, table } from 'table';
 
-import ProxyMiddleware, { IClientLogger, ProxyMiddlewareOpts } from './middleware';
+import ProxyRouter, { ProxyRouterOpts, ProxyRouterResponse, WorkerLogger } from './router';
 
 config({ path: resolve(__dirname, '.env.version') });
 dayjs.extend(relativeTime);
@@ -50,7 +52,7 @@ export class ProxyLogTransform extends Transform {
     };
   }
 
-  _transform(chunk: IClientLogger, encoding: string, done: (error?: Error) => void): void {
+  _transform(chunk: WorkerLogger, encoding: string, done: (error?: Error) => void): void {
     const data = {
       token: chunk.token,
       pending: chunk.pending,
@@ -103,37 +105,53 @@ export function readTokensFile(filename: string): string[] {
   return parseTokens(readFileSync(filepath, 'utf8'));
 }
 
-export type CliOpts = ProxyMiddlewareOpts & {
+export type CliOpts = ProxyRouterOpts & {
   api: APIVersion;
   tokens: string[];
   silent?: boolean;
 };
 
-export function createProxyServer(options: CliOpts): ReturnType<typeof express> {
+export function createProxyServer(options: CliOpts): FastifyInstance {
   const tokens = compact(options.tokens).reduce(
     (memo: string[], token: string) => concatTokens(token, memo),
     []
   );
 
-  const app = express();
+  const fastify = Fastify({});
 
-  app.use(
-    statusMonitor({
-      healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
+  fastify.register(fastifyFormBody).after(() =>
+    fastify.register(fastifyExpress).after(() => {
+      fastify.use(
+        statusMonitor({
+          healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
+        })
+      );
     })
   );
 
-  const proxy = new ProxyMiddleware(tokens, options);
+  const proxy = new ProxyRouter(tokens, options);
 
-  if (options.api === APIVersion.GraphQL) app.post('/graphql', proxy.schedule.bind(proxy));
-  else app.get('/*', proxy.schedule.bind(proxy));
+  const scheduler = (req: FastifyRequest, reply: FastifyReply) => proxy.schedule(req, reply);
+  const defaultHandler = (req: FastifyRequest, res: FastifyReply) => {
+    res
+      .status(ProxyRouterResponse.PROXY_ERROR)
+      .send({ message: `Endpoint not supported for "${options.api}" api.` });
+  };
 
-  app.all('/*', (req, res) => {
-    res.status(401).json({ message: `Endpoint not supported for "${options.api}" api.` });
+  fastify.route({
+    method: ['DELETE', 'PATCH', 'PUT'],
+    url: '/*',
+    handler: defaultHandler
   });
 
+  if (options.api === APIVersion.GraphQL) {
+    fastify.post('/graphql', scheduler).get('/*', defaultHandler);
+  } else {
+    fastify.get('/*', scheduler).post('/*', defaultHandler);
+  }
+
   if (!options.silent)
-    proxy.pipe(new ProxyLogTransform().on('data', (data) => app.emit('log', data)));
+    proxy.pipe(new ProxyLogTransform().on('data', (data) => fastify.server.emit('log', data)));
 
   tokens.map((token) =>
     axios
@@ -146,11 +164,11 @@ export function createProxyServer(options: CliOpts): ReturnType<typeof express> 
       .catch((error) => {
         if (error.response?.status !== 401) return;
         proxy.removeToken(token);
-        app.emit('warn', `Invalid token detected (${token}).`);
+        fastify.server.emit('warn', `Invalid token detected (${token}).`);
       })
   );
 
-  return app;
+  return fastify;
 }
 
 // parse arguments from command line
@@ -254,12 +272,11 @@ if (require.main === module) {
       minRemaining: options.minRemaining
     };
 
-    const app = createProxyServer(appOptions)
-      .on('warn', consola.warn)
-      .on('log', (data) => process.stdout.write(data.toString()));
+    const app = createProxyServer(appOptions);
 
-    const server = app
-      .listen(options.port)
+    app.server
+      .on('warn', consola.warn)
+      .on('log', (data) => process.stdout.write(data.toString()))
       .on('listening', () => {
         const host = `http://${address()}:${options.port}`;
         consola.success(
@@ -287,17 +304,20 @@ if (require.main === module) {
       })
       .on('error', (error) => {
         consola.error(error);
-        server.close();
+        app.server.close();
         process.exit(1);
       });
 
+    await app.listen(options.port, '0.0.0.0');
+
     process.on('SIGTERM', async () => {
       consola.info('SIGTERM signal received: closing HTTP server');
-      server.close(() => {
-        consola.success('Server closed');
-        process.exit(0);
-      });
-      setTimeout(() => process.exit(1), 10 * 1000);
+
+      app
+        .close()
+        .finally(() => consola.success('Server closed'))
+        .then(() => process.exit(0))
+        .catch(() => process.exit(1));
     });
   })();
 }

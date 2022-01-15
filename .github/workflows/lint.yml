@@ -4,15 +4,13 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src'
-      - 'types'
+      - 'src/**'
       - '.eslint*'
       - 'tsconfig.json'
   pull_request:
     branches: [master]
     paths:
-      - 'src'
-      - 'types'
+      - 'src/**'
       - '.eslint*'
       - 'tsconfig.json'
 

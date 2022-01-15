@@ -4,15 +4,13 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src'
-      - 'types'
+      - 'src/**'
       - 'jest.config.js'
       - 'tsconfig.json'
   pull_request:
     branches: [master]
     paths:
-      - 'src'
-      - 'types'
+      - 'src/**'
       - 'jest.config.js'
       - 'tsconfig.json'
 
