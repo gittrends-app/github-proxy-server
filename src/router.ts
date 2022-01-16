@@ -166,6 +166,10 @@ class ProxyWorker extends Readable {
     return RECEIVED + QUEUED;
   }
 
+  get actualRemaining(): number {
+    return this.remaining - this.pending;
+  }
+
   destroy(error?: Error): this {
     this.proxy.close();
     super.destroy(error);
@@ -199,7 +203,10 @@ export default class ProxyRouter extends PassThrough {
   async schedule(req: FastifyRequest, res: FastifyReply): Promise<void> {
     const client = shuffle(this.clients).reduce(
       (selected: ProxyWorker | null, client) =>
-        !selected || client.pending < selected.pending ? client : selected,
+        !selected ||
+        (client.actualRemaining > this.options.minRemaining && client.pending < selected.pending)
+          ? client
+          : selected,
       null
     );
 
