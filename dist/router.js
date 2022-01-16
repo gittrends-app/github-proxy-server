@@ -15,11 +15,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProxyRouterResponse = void 0;
 /* Author: Hudson S. Borges */
 const bottleneck_1 = __importDefault(require("bottleneck"));
-const faker_1 = __importDefault(require("faker"));
 const http_proxy_1 = require("http-proxy");
 const lodash_1 = require("lodash");
 const stream_1 = require("stream");
-faker_1.default.seed(12345);
 class ProxyWorker extends stream_1.Readable {
     constructor(token, opts) {
         super({ objectMode: true, read: () => null });
@@ -123,6 +121,7 @@ class ProxyWorker extends stream_1.Readable {
     destroy(error) {
         this.proxy.close();
         super.destroy(error);
+        return this;
     }
 }
 var ProxyRouterResponse;
@@ -173,6 +172,7 @@ class ProxyRouter extends stream_1.PassThrough {
     destroy(error) {
         this.clients.forEach((client) => this.removeToken(client.token));
         super.destroy(error);
+        return this;
     }
 }
 exports.default = ProxyRouter;

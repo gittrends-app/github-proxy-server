@@ -1,13 +1,10 @@
 /* Author: Hudson S. Borges */
 import Bottleneck from 'bottleneck';
-import faker from 'faker';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { ClientRequest, IncomingMessage } from 'http';
 import Server, { createProxyServer } from 'http-proxy';
 import { min, shuffle } from 'lodash';
 import { PassThrough, Readable } from 'stream';
-
-faker.seed(12345);
 
 type ProxyWorkerOpts = {
   requestTimeout: number;
@@ -169,9 +166,10 @@ class ProxyWorker extends Readable {
     return RECEIVED + QUEUED;
   }
 
-  destroy(error?: Error): void {
+  destroy(error?: Error): this {
     this.proxy.close();
     super.destroy(error);
+    return this;
   }
 }
 
@@ -235,8 +233,9 @@ export default class ProxyRouter extends PassThrough {
     return this.clients.map((client) => client.token);
   }
 
-  destroy(error?: Error): void {
+  destroy(error?: Error): this {
     this.clients.forEach((client) => this.removeToken(client.token));
     super.destroy(error);
+    return this;
   }
 }
