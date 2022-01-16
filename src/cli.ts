@@ -12,7 +12,6 @@ import { EventEmitter } from 'events';
 import statusMonitor from 'express-status-monitor';
 import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import fastifyExpress from 'fastify-express';
-import fastifyFormBody from 'fastify-formbody';
 import { existsSync, readFileSync } from 'fs';
 import { address } from 'ip';
 import { compact, isNil, isObjectLike, omit, omitBy, uniq } from 'lodash';
@@ -119,15 +118,16 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
 
   const fastify = Fastify({});
 
-  fastify.register(fastifyFormBody).after(() =>
-    fastify.register(fastifyExpress).after(() => {
-      fastify.use(
-        statusMonitor({
-          healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
-        })
-      );
-    })
-  );
+  fastify.removeAllContentTypeParsers();
+  fastify.addContentTypeParser('*', {}, (req, payload, done) => done(null, req.body));
+
+  fastify.register(fastifyExpress).after(() => {
+    fastify.use(
+      statusMonitor({
+        healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
+      })
+    );
+  });
 
   const proxy = new ProxyRouter(tokens, options);
 
