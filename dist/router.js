@@ -118,6 +118,9 @@ class ProxyWorker extends stream_1.Readable {
         const { RECEIVED, QUEUED } = this.queue.counts();
         return RECEIVED + QUEUED;
     }
+    get actualRemaining() {
+        return this.remaining - this.pending;
+    }
     destroy(error) {
         this.proxy.close();
         super.destroy(error);
@@ -141,7 +144,10 @@ class ProxyRouter extends stream_1.PassThrough {
     // function to select the best client and queue request
     schedule(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            const client = (0, lodash_1.shuffle)(this.clients).reduce((selected, client) => !selected || client.pending < selected.pending ? client : selected, null);
+            const client = (0, lodash_1.shuffle)(this.clients).reduce((selected, client) => !selected ||
+                (client.actualRemaining > this.options.minRemaining && client.pending < selected.pending)
+                ? client
+                : selected, null);
             if (!client || client.remaining <= this.options.minRemaining) {
                 return res.status(ProxyRouterResponse.NO_REQUESTS).send({
                     message: 'Proxy Server: no requests available',
