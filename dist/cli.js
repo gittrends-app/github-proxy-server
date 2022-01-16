@@ -45,7 +45,6 @@ const events_1 = require("events");
 const express_status_monitor_1 = __importDefault(require("express-status-monitor"));
 const fastify_1 = __importDefault(require("fastify"));
 const fastify_express_1 = __importDefault(require("fastify-express"));
-const fastify_formbody_1 = __importDefault(require("fastify-formbody"));
 const fs_1 = require("fs");
 const ip_1 = require("ip");
 const lodash_1 = require("lodash");
@@ -130,11 +129,13 @@ exports.readTokensFile = readTokensFile;
 function createProxyServer(options) {
     const tokens = (0, lodash_1.compact)(options.tokens).reduce((memo, token) => concatTokens(token, memo), []);
     const fastify = (0, fastify_1.default)({});
-    fastify.register(fastify_formbody_1.default).after(() => fastify.register(fastify_express_1.default).after(() => {
+    fastify.removeAllContentTypeParsers();
+    fastify.addContentTypeParser('*', {}, (req, payload, done) => done(null, req.body));
+    fastify.register(fastify_express_1.default).after(() => {
         fastify.use((0, express_status_monitor_1.default)({
             healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
         }));
-    }));
+    });
     const proxy = new router_1.default(tokens, options);
     const scheduler = (req, reply) => proxy.schedule(req, reply);
     const defaultHandler = (req, res) => {
