@@ -742,6 +742,14 @@
   dependencies:
     ajv "^6.12.6"
 
+"@fastify/express@^1.1.0":
+  version "1.1.0"
+  resolved "https://registry.yarnpkg.com/@fastify/express/-/express-1.1.0.tgz#f2387b6ece4fef1ec7686302fe13a7ee4f20f4ce"
+  integrity sha512-hUqLYC3PTFwa/lwtuhtNeOrYuejyneG7A7ewO+2BM99lyasPK9ZAH1zyhBv6f5+3TU3nWpRh0pENLU70dw06gQ==
+  dependencies:
+    express "^4.17.1"
+    fastify-plugin "^3.0.0"
+
 "@humanwhocodes/config-array@^0.9.2":
   version "0.9.2"
   resolved "https://registry.yarnpkg.com/@humanwhocodes/config-array/-/config-array-0.9.2.tgz#68be55c737023009dfc5fe245d51181bb6476914"
@@ -3397,14 +3405,6 @@ fastify-error@^0.3.0:
   version "0.3.1"
   resolved "https://registry.yarnpkg.com/fastify-error/-/fastify-error-0.3.1.tgz#8eb993e15e3cf57f0357fc452af9290f1c1278d2"
   integrity sha512-oCfpcsDndgnDVgiI7bwFKAun2dO+4h84vBlkWsWnz/OUK9Reff5UFoFl241xTiLeHWX/vU9zkDVXqYUxjOwHcQ==
-
-fastify-express@^0.3.3:
-  version "0.3.3"
-  resolved "https://registry.yarnpkg.com/fastify-express/-/fastify-express-0.3.3.tgz#d87acf6461e91ff141864e191abf25b9bdd3a262"
-  integrity sha512-1b95R59zUJET/RQg3RaOeHq7DToDaFr1Nslhd/ND+zH2sMUe5/fF4gj4XbFt3Nfteay4hXjCWTBjOKe+KUOlMA==
-  dependencies:
-    express "^4.17.1"
-    fastify-plugin "^3.0.0"
 
 fastify-formbody@^5.2.0:
   version "5.2.0"

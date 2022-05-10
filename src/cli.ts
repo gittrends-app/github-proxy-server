@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 /* Author: Hudson S. Borges */
+import fastifyExpress from '@fastify/express';
 import axios from 'axios';
 import chalk from 'chalk';
 import { Option, program } from 'commander';
@@ -11,7 +12,6 @@ import { config } from 'dotenv-override-true';
 import { EventEmitter } from 'events';
 import statusMonitor from 'express-status-monitor';
 import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import fastifyExpress from 'fastify-express';
 import { existsSync, readFileSync } from 'fs';
 import { address } from 'ip';
 import { compact, isNil, isObjectLike, omit, omitBy, uniq } from 'lodash';
@@ -116,7 +116,7 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
     []
   );
 
-  const fastify = Fastify({});
+  const fastify = Fastify({ logger: process.env.DEBUG == 'true' });
 
   fastify.removeAllContentTypeParsers();
   fastify.addContentTypeParser('*', {}, (req, payload, done) => done(null, req.body));
