@@ -131,7 +131,10 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
 
   const proxy = new ProxyRouter(tokens, options);
 
-  const scheduler = (req: FastifyRequest, reply: FastifyReply) => proxy.schedule(req, reply);
+  const scheduler = (req: FastifyRequest, reply: FastifyReply) => {
+    proxy.schedule(req, reply);
+  };
+
   const defaultHandler = (req: FastifyRequest, res: FastifyReply) => {
     res
       .status(ProxyRouterResponse.PROXY_ERROR)
