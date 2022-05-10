@@ -129,7 +129,9 @@ function createProxyServer(options) {
         }));
     });
     const proxy = new router_1.default(tokens, options);
-    const scheduler = (req, reply) => proxy.schedule(req, reply);
+    const scheduler = (req, reply) => {
+        proxy.schedule(req, reply);
+    };
     const defaultHandler = (req, res) => {
         res
             .status(router_1.ProxyRouterResponse.PROXY_ERROR)
