@@ -19,21 +19,13 @@ var __importStar = (this && this.__importStar) || function (mod) {
     __setModuleDefault(result, mod);
     return result;
 };
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createProxyServer = exports.readTokensFile = exports.parseTokens = exports.ProxyLogTransform = exports.APIVersion = void 0;
 /* Author: Hudson S. Borges */
+const express_1 = __importDefault(require("@fastify/express"));
 const axios_1 = __importDefault(require("axios"));
 const chalk_1 = __importDefault(require("chalk"));
 const commander_1 = require("commander");
@@ -44,7 +36,6 @@ const dotenv_override_true_1 = require("dotenv-override-true");
 const events_1 = require("events");
 const express_status_monitor_1 = __importDefault(require("express-status-monitor"));
 const fastify_1 = __importDefault(require("fastify"));
-const fastify_express_1 = __importDefault(require("fastify-express"));
 const fs_1 = require("fs");
 const ip_1 = require("ip");
 const lodash_1 = require("lodash");
@@ -60,9 +51,10 @@ var APIVersion;
     APIVersion["REST"] = "rest";
 })(APIVersion = exports.APIVersion || (exports.APIVersion = {}));
 class ProxyLogTransform extends stream_1.Transform {
+    started = false;
+    config;
     constructor() {
         super({ objectMode: true });
-        this.started = false;
         this.config = {
             columnDefault: { alignment: 'right', width: 5 },
             columns: {
@@ -128,10 +120,10 @@ function readTokensFile(filename) {
 exports.readTokensFile = readTokensFile;
 function createProxyServer(options) {
     const tokens = (0, lodash_1.compact)(options.tokens).reduce((memo, token) => concatTokens(token, memo), []);
-    const fastify = (0, fastify_1.default)({});
+    const fastify = (0, fastify_1.default)({ logger: process.env.DEBUG == 'true' });
     fastify.removeAllContentTypeParsers();
     fastify.addContentTypeParser('*', {}, (req, payload, done) => done(null, req.body));
-    fastify.register(fastify_express_1.default).after(() => {
+    fastify.register(express_1.default).after(() => {
         fastify.use((0, express_status_monitor_1.default)({
             healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
         }));
@@ -164,8 +156,7 @@ function createProxyServer(options) {
         }
     })
         .catch((error) => {
-        var _a;
-        if (((_a = error.response) === null || _a === void 0 ? void 0 : _a.status) !== 401)
+        if (error.response?.status !== 401)
             return;
         proxy.removeToken(token);
         fastify.server.emit('warn', `Invalid token detected (${token}).`);
@@ -202,7 +193,7 @@ if (require.main === module) {
         process.exit(1);
     }
     events_1.EventEmitter.defaultMaxListeners = Number.MAX_SAFE_INTEGER;
-    (() => __awaiter(void 0, void 0, void 0, function* () {
+    (async () => {
         const tokens = [...options.token, ...(options.tokens || [])].reduce((memo, token) => concatTokens(token, memo), []);
         const appOptions = {
             api: options.api,
@@ -241,14 +232,14 @@ if (require.main === module) {
             app.server.close();
             process.exit(1);
         });
-        yield app.listen(options.port, '0.0.0.0');
-        process.on('SIGTERM', () => __awaiter(void 0, void 0, void 0, function* () {
+        await app.listen(options.port, '0.0.0.0');
+        process.on('SIGTERM', async () => {
             consola_1.default.info('SIGTERM signal received: closing HTTP server');
             app
                 .close()
                 .finally(() => consola_1.default.success('Server closed'))
                 .then(() => process.exit(0))
                 .catch(() => process.exit(1));
-        }));
-    }))();
+        });
+    })();
 }
