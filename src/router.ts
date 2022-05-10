@@ -87,6 +87,17 @@ class ProxyWorker extends Readable {
           return true;
         })
         .join(', ');
+
+      const replaceURL = (url: string): string =>
+        req.headers.host
+          ? url.replaceAll('https://api.github.com', `http://${req.headers.host}`)
+          : url;
+
+      proxyRes.headers.link =
+        proxyRes.headers.link &&
+        (Array.isArray(proxyRes.headers.link)
+          ? proxyRes.headers.link.map(replaceURL)
+          : replaceURL(proxyRes.headers.link));
     });
 
     this.queue = new Bottleneck({
