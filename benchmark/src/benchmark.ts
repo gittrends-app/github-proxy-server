@@ -79,33 +79,41 @@ async function processResouces(
 
   const processor = async (resource: Resource) => {
     const pStartedAt = Date.now();
+    let status = 'ok';
 
-    const status = await genericProcessor(repo, resource, {
-      appClient: opts.appClient,
-      db: opts.db
-    })
-      .then(() => 'ok')
-      .catch((error) => error.message || JSON.stringify(error));
-
-    opts.onResourceUpdate({
-      repository: repo.full_name,
-      resource,
-      status,
-      started_at: pStartedAt,
-      finished_at: Date.now(),
-      duration: Date.now() - pStartedAt
-    });
+    try {
+      await genericProcessor(repo, resource, { appClient: opts.appClient, db: opts.db });
+    } catch (error: any) {
+      status = error.message || JSON.stringify(error);
+      throw error;
+    } finally {
+      opts.onResourceUpdate({
+        repository: repo.full_name,
+        resource,
+        status,
+        started_at: pStartedAt,
+        finished_at: Date.now(),
+        duration: Date.now() - pStartedAt
+      });
+    }
   };
 
-  if (type === 'sequential') for (const resource of resources) await processor(resource);
-  if (type === 'concurrent') await Promise.all(resources.map((resource) => processor(resource)));
-
-  opts.onResourceUpdate({
-    repository: repo.full_name,
-    started_at: startedAt,
-    finished_at: Date.now(),
-    duration: Date.now() - startedAt
-  });
+  let status = 'ok';
+  try {
+    if (type === 'sequential') for (const resource of resources) await processor(resource);
+    if (type === 'concurrent') await Promise.all(resources.map((resource) => processor(resource)));
+  } catch (error: any) {
+    status = error.message || JSON.stringify(error);
+    throw error;
+  } finally {
+    opts.onResourceUpdate({
+      repository: repo.full_name,
+      started_at: startedAt,
+      status,
+      finished_at: Date.now(),
+      duration: Date.now() - startedAt
+    });
+  }
 }
 
 program
@@ -175,10 +183,11 @@ program
       const availableIndex = useGithub ? status.findIndex((s) => s === true) : 0;
       if (availableIndex < 0) {
         await processor.push(repo);
-        await new Promise<void>((resolve) => setTimeout(() => resolve(), 5000));
+        await new Promise<void>((resolve) => setTimeout(() => resolve(), 15000));
       }
 
       status[availableIndex] = false;
+
       await processResouces(
         repo,
         ['tags', 'releases', 'watchers', 'stargazers', 'issues'],
@@ -188,8 +197,9 @@ program
           db: db,
           onResourceUpdate: (data) => benchmarkStream.write(data)
         }
-      );
-      status[availableIndex] = true;
+      )
+        .catch(() => processor.push(repo))
+        .finally(() => (status[availableIndex] = true));
     }, workers);
 
     processor.error((err) => consola.error(err));
