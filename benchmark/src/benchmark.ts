@@ -172,7 +172,7 @@ program
 
     const processor = queue(async (repo: Record<string, any>) => {
       consola.info(`[${repo.full_name}] starting processors ...`);
-      const availableIndex = status.findIndex((s) => s === true);
+      const availableIndex = useGithub ? status.findIndex((s) => s === true) : 0;
       if (availableIndex < 0) throw new Error('Client not available!');
 
       status[availableIndex] = false;

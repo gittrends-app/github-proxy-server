@@ -13,7 +13,7 @@ const tokens = [...Array(10)]
 const app = createProxyServer({
   api: APIVersion.REST,
   minRemaining: 0,
-  requestInterval: 100,
+  requestInterval: 50,
   requestTimeout: 15000,
   tokens: tokens as string[]
 });

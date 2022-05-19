@@ -15,7 +15,11 @@ export default class GitHubApp extends EventEmitter {
   constructor(token: string, baseUrl = process.env.GH_GITHUB_URL) {
     super();
 
-    this.octokit = new PaginatedOctokit({ auth: token, baseUrl, throttle: {} });
+    this.octokit = new PaginatedOctokit({
+      ...(token ? { auth: token } : {}),
+      baseUrl,
+      throttle: {}
+    });
 
     this.octokit.hook.wrap('request', async (request, options) => {
       const requestId = ++this.requestId;
