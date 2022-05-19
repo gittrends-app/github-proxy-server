@@ -151,11 +151,11 @@ program
     });
 
     const connectionOpts = {
-      host: 'localhost',
-      port: 27017,
+      host: process.env.GH_MONGO_HOST ?? 'localhost',
+      port: parseInt(process.env.GH_MONGO_PORT ?? '27017', 10),
       db: `benchmark-${suffix}`,
-      password: 'mongodb',
-      username: 'mongodb'
+      username: process.env.GH_MONGO_USERNAME ?? 'mongodb',
+      password: process.env.GH_MONGO_PASSWORD ?? 'mongodb'
     };
 
     consola.info('Connecting to mongo database ...');
