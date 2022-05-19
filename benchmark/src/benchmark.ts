@@ -85,7 +85,7 @@ async function processResouces(
       db: opts.db
     })
       .then(() => 'ok')
-      .catch(() => 'error');
+      .catch((error) => error.message || JSON.stringify(error));
 
     opts.onResourceUpdate({
       repository: repo.full_name,
@@ -173,7 +173,10 @@ program
     const processor = queue(async (repo: Record<string, any>) => {
       consola.info(`[${repo.full_name}] starting processors ...`);
       const availableIndex = useGithub ? status.findIndex((s) => s === true) : 0;
-      if (availableIndex < 0) throw new Error('Client not available!');
+      if (availableIndex < 0) {
+        await processor.push(repo);
+        await new Promise<void>((resolve) => setTimeout(() => resolve(), 5000));
+      }
 
       status[availableIndex] = false;
       await processResouces(
