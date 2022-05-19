@@ -19,7 +19,7 @@
     "@octokit/plugin-rest-endpoint-methods": "^5.13.0",
     "async": "^3.2.3",
     "axios": "^0.27.2",
-    "chalk": "^5.0.1",
+    "chalk": "^4",
     "chance": "^1.1.8",
     "commander": "^9.2.0",
     "consola": "^2.15.3",

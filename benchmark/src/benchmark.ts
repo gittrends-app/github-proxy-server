@@ -154,8 +154,8 @@ program
       host: process.env.GH_MONGO_HOST ?? 'localhost',
       port: parseInt(process.env.GH_MONGO_PORT ?? '27017', 10),
       db: `benchmark-${suffix}`,
-      username: process.env.GH_MONGO_USERNAME ?? 'mongodb',
-      password: process.env.GH_MONGO_PASSWORD ?? 'mongodb'
+      username: process.env.GH_MONGO_USERNAME,
+      password: process.env.GH_MONGO_PASSWORD
     };
 
     consola.info('Connecting to mongo database ...');
