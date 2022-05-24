@@ -37,7 +37,9 @@ export default class GitHubApp extends EventEmitter {
         duration: finishedAt - startedAt
       });
 
-      return data;
+      return new Promise((resolve) =>
+        setTimeout(() => resolve(data), baseUrl === process.env.GH_GITHUB_URL ? 50 : 0)
+      );
     });
   }
 
