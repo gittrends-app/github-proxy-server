@@ -1,0 +1,121 @@
+---
+title: "GitHub Proxy Server - Exemplo de Uso"
+author: Hudson Silva Borges
+date: 25 de Maio de 2022
+output: github_document
+---
+
+## Introdução
+
+Este script tem por objetivo reproduzir os passos necessários para reprodução da análise realizada no artigo produzido e submetido para o SBES 2022 - Sessão de Ferramentas.
+
+Este arquivo R notebook tem como intenção principal facilitar a registrar e facilitar a reprodução dos resultados obtidos e reportados no trabalho. Detalhes da metodologia podem ser encontrados no artigo submetido.
+
+## Dependências
+
+Para executar este arquivo é necessário possuir algumas dependências, como, por exemplo, `anytime`. O código a seguir prepara o ambiente.
+
+```{r setup}
+if(!require(anytime)){ install.packages("anytime") }
+library(anytime)
+
+Sys.setenv(TZ=anytime:::getTZ()) ## helper function to try to get TZ
+options(digits.secs=6)
+options(scipen=999)
+```
+
+## Análise dos resultados do experimento
+
+Inicialmente, a avaliação foi feita comparando o desempenho (medido em tempo) usando somente um token de acesso. As requisições feitas diretamente ao GitHub foram realziadas sequencialmente e as requisições ao servidor proxy foram configuradas para serem realizadas em paralelo uma vez que o mesmo é capaz de tratá-las de forma adequada. Sem seguida avaliamos o desempenho usando três tokens de acesso diferentes. Os resultados de cada um destes cenários são apresentados abaixo.
+
+### Cenário 1: Somente um token de acesso
+
+Os dados a seguir mostram um resumo da mineração executada usando somente um token com requisições diretas ao serviço do GitHub.
+
+```{r}
+requests_github_1w = read.csv(normalizePath(file.path('logs', 'requests_1g-1653435356283.csv')), header = T)
+requests_github_1w$formatted_started_at = anytime(requests_github_1w$started_at / 1000)
+requests_github_1w$formatted_finished_at = anytime(requests_github_1w$finished_at / 1000)
+
+summary(requests_github_1w[, c('formatted_started_at', 'formatted_finished_at', 'duration')])
+```
+
+```{r}
+tmp.started_at = head(requests_github_1w$formatted_started_at, 1)
+tmp.finished_at = tail(requests_github_1w$formatted_finished_at, 1)
+print(tmp.finished_at -tmp.started_at)
+```
+
+Considerando o uso de um único token e requisições ao servidor proxy.
+
+```{r}
+requests_proxy_3w = read.csv(normalizePath(file.path('logs', 'requests_3p-1653437711187.csv')), header = T)
+requests_proxy_3w$formatted_started_at = anytime(requests_proxy_3w$started_at / 1000)
+requests_proxy_3w$formatted_finished_at = anytime(requests_proxy_3w$finished_at / 1000)
+
+summary(requests_proxy_3w[, c('formatted_started_at', 'formatted_finished_at', 'duration')])
+```
+
+```{r}
+tmp.started_at = head(requests_proxy_3w$formatted_started_at, 1)
+tmp.finished_at = tail(requests_proxy_3w$formatted_finished_at, 1)
+print(tmp.finished_at -tmp.started_at)
+```
+
+```{r, dev=c('svg', 'pdf')}
+tmp.x1 = anytime((requests_github_1w$finished_at - head(requests_github_1w$started_at, 1)) / 1000)
+tmp.y1 = anytime(requests_github_1w$duration / 1000)
+tmp.x2 = anytime((requests_proxy_3w$finished_at - head(requests_proxy_3w$started_at, 1)) / 1000)
+tmp.y2 = anytime(requests_proxy_3w$duration / 1000)
+tmp.xlim = c(min(tmp.x1, tmp.x2), max(tmp.x1, tmp.x2))
+tmp.ylim = c(min(tmp.y1, tmp.y2), max(tmp.y1, tmp.y2))
+plot(tmp.y1 ~ tmp.x1, xlim = tmp.xlim, ylim = tmp.ylim, col = 'blue', pch=20, cex = .25, type = 'l', xlab = 'Tempo (minutos:segundos)', ylab = 'Duração (segundos)', lwd = 0.75)
+lines(tmp.y2 ~ tmp.x2, col = 'red', pch=20, cex = .5, lwd = 0.75)
+legend('top', legend = c('Requisição direta', 'Requisição para o proxy'), col = c('blue', 'red'), lty=1, cex=0.8)
+```
+
+### Cenário 2: Usando três tokens de acesso
+
+Nós também avaliamos a mesma tarefa dispondo de três tokens disponíveis. A seguir seque o resumo das requisições realizadas diretamente ao github.
+
+```{r}
+requests_github_3w = read.csv(normalizePath(file.path('logs', 'requests_3g-1653446568445.csv')), header = T)
+requests_github_3w$formatted_started_at = anytime(requests_github_3w$started_at / 1000)
+requests_github_3w$formatted_finished_at = anytime(requests_github_3w$finished_at / 1000)
+
+summary(requests_github_3w[, c('formatted_started_at', 'formatted_finished_at', 'duration')])
+```
+
+```{r}
+tmp.started_at = head(requests_github_3w$formatted_started_at, 1)
+tmp.finished_at = tail(requests_github_3w$formatted_finished_at, 1)
+print(tmp.finished_at -tmp.started_at)
+```
+
+Considerando o uso de um único token e requisições ao servidor proxy.
+
+```{r}
+requests_proxy_9w = read.csv(normalizePath(file.path('logs', 'requests_9p-1653487063109.csv')), header = T)
+requests_proxy_9w$formatted_started_at = anytime(requests_proxy_9w$started_at / 1000)
+requests_proxy_9w$formatted_finished_at = anytime(requests_proxy_9w$finished_at / 1000)
+
+summary(requests_proxy_9w[, c('formatted_started_at', 'formatted_finished_at', 'duration')])
+```
+
+```{r}
+tmp.started_at = head(requests_proxy_9w$formatted_started_at, 1)
+tmp.finished_at = tail(requests_proxy_9w$formatted_finished_at, 1)
+print(tmp.finished_at -tmp.started_at)
+```
+
+```{r, dev=c('svg', 'pdf')}
+tmp.x1 = anytime((requests_github_3w$finished_at - head(requests_github_3w$started_at, 1)) / 1000)
+tmp.y1 = anytime(requests_github_3w$duration / 1000)
+tmp.x2 = anytime((requests_proxy_9w$finished_at - head(requests_proxy_9w$started_at, 1)) / 1000)
+tmp.y2 = anytime(requests_proxy_9w$duration / 1000)
+tmp.xlim = c(min(tmp.x1, tmp.x2), max(tmp.x1, tmp.x2))
+tmp.ylim = c(min(tmp.y1, tmp.y2), max(tmp.y1, tmp.y2))
+plot(tmp.y1 ~ tmp.x1, xlim = tmp.xlim, ylim = tmp.ylim, col = 'blue', pch=20, cex = .2, type = 'l', xlab = 'Tempo (minutos:segundos)', ylab = 'Duração (segundos)', lwd = 0.15)
+lines(tmp.y2 ~ tmp.x2, col = 'red', pch=20, cex = .15, lwd = 0.2)
+legend('top', legend = c('Requisição direta', 'Requisição para o proxy'), col = c('blue', 'red'), lty=1, cex=0.8)
+```
