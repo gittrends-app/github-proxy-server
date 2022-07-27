@@ -86,7 +86,7 @@ describe('Test cli utils', () => {
     };
 
     test('it should push a header in the first request', async () => {
-      const logger = new ProxyLogTransform();
+      const logger = new ProxyLogTransform(APIVersion.REST);
 
       const chunks: string[] = [];
       logger.on('data', (chunk: string) => chunks.push(chunk));
@@ -129,7 +129,6 @@ describe('Test cli utils', () => {
       port = await getPort();
 
       params = {
-        api: APIVersion.REST,
         tokens: [repeat('0', 40)],
         minRemaining: 0,
         requestInterval: 100,
@@ -154,20 +153,17 @@ describe('Test cli utils', () => {
       expect(() => createProxyServer(params)).toThrowError();
     });
 
-    test(`it should accept only GET requests for ${APIVersion.REST}`, async () => {
-      fastify = await createLocalProxyServer({ ...params, api: APIVersion.REST });
+    test(`it should accept GET requests`, async () => {
+      fastify = await createLocalProxyServer({ ...params });
       await expect(client.get('/')).resolves.toBeDefined();
       await expect(client.post('/')).rejects.toThrowError();
       await expect(client.put('/')).rejects.toThrowError();
       await expect(client.delete('/')).rejects.toThrowError();
     });
 
-    test(`it should accept only POSTs to /graphql for ${APIVersion.GraphQL}`, async () => {
-      fastify = await createLocalProxyServer({ ...params, api: APIVersion.GraphQL });
+    test(`it should accept POSTs only to /graphql`, async () => {
+      fastify = await createLocalProxyServer({ ...params });
       await expect(client.post('/graphql')).resolves.toBeDefined();
-      await expect(client.get('/')).rejects.toThrowError();
-      await expect(client.put('/')).rejects.toThrowError();
-      await expect(client.delete('/')).rejects.toThrowError();
     });
 
     test(`it should log the requests when enabled`, async () => {

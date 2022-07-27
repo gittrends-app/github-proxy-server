@@ -30,28 +30,33 @@ export enum APIVersion {
 }
 
 export class ProxyLogTransform extends Transform {
-  started = false;
+  private started = false;
   private config?: TableUserConfig;
 
-  constructor() {
+  constructor(private api: APIVersion) {
     super({ objectMode: true });
 
     this.config = {
       columnDefault: { alignment: 'right', width: 5 },
       columns: {
-        0: { width: 5 },
-        1: { width: 3 },
-        2: { width: 5 },
-        3: { width: 18 },
-        4: { width: 4 },
-        5: { width: 7 }
+        0: { width: 7 },
+        1: { width: 5 },
+        2: { width: 3 },
+        3: { width: 5 },
+        4: { width: 18 },
+        5: { width: 4 },
+        6: { width: 7 }
       },
       border: getBorderCharacters('void'),
       singleLine: true
     };
   }
 
-  _transform(chunk: WorkerLogger, encoding: string, done: (error?: Error) => void): void {
+  _transform(
+    chunk: WorkerLogger & { api: string },
+    encoding: string,
+    done: (error?: Error) => void
+  ): void {
     const data = {
       token: chunk.token,
       pending: chunk.pending,
@@ -65,14 +70,12 @@ export class ProxyLogTransform extends Transform {
       this.started = true;
       this.push(
         chalk.bold('Columns: ') +
-          Object.keys(data)
-            .map((v) => chalk.underline(v))
-            .join(', ') +
+          ['api', ...Object.keys(data)].map((v) => chalk.underline(v)).join(', ') +
           '\n\n'
       );
     }
 
-    this.push(table([Object.values(data)], this.config).trimEnd() + '\n');
+    this.push(table([[this.api, ...Object.values(data)]], this.config).trimEnd() + '\n');
 
     done();
   }
@@ -105,7 +108,6 @@ export function readTokensFile(filename: string): string[] {
 }
 
 export type CliOpts = ProxyRouterOpts & {
-  api: APIVersion;
   tokens: string[];
   silent?: boolean;
 };
@@ -129,32 +131,34 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
     );
   });
 
-  const proxy = new ProxyRouter(tokens, options);
+  const proxyInstances: { [key: string]: ProxyRouter } = Object.values(APIVersion).reduce(
+    (memo, version) => {
+      const proxy = new ProxyRouter(tokens, options);
 
-  const scheduler = (req: FastifyRequest, reply: FastifyReply) => {
-    proxy.schedule(req, reply);
-  };
-
-  const defaultHandler = (req: FastifyRequest, res: FastifyReply) => {
-    res
-      .status(ProxyRouterResponse.PROXY_ERROR)
-      .send({ message: `Endpoint not supported for "${options.api}" api.` });
-  };
+      if (!options.silent)
+        proxy.pipe(
+          new ProxyLogTransform(version).on('data', (data) => fastify.server.emit('log', data))
+        );
+      return { ...memo, [version]: proxy };
+    },
+    {}
+  );
 
   fastify.route({
     method: ['DELETE', 'PATCH', 'PUT'],
     url: '/*',
-    handler: defaultHandler
+    handler: (req: FastifyRequest, res: FastifyReply) => {
+      res.status(ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });
+    }
   });
 
-  if (options.api === APIVersion.GraphQL) {
-    fastify.post('/graphql', scheduler).get('/*', defaultHandler);
-  } else {
-    fastify.get('/*', scheduler).post('/*', defaultHandler);
-  }
-
-  if (!options.silent)
-    proxy.pipe(new ProxyLogTransform().on('data', (data) => fastify.server.emit('log', data)));
+  fastify
+    .post('/graphql', (req: FastifyRequest, reply: FastifyReply) => {
+      proxyInstances[APIVersion.GraphQL].schedule(req, reply);
+    })
+    .get('/*', (req: FastifyRequest, reply: FastifyReply) => {
+      proxyInstances[APIVersion.REST].schedule(req, reply);
+    });
 
   tokens.map((token) =>
     axios
@@ -166,7 +170,7 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
       })
       .catch((error) => {
         if (error.response?.status !== 401) return;
-        proxy.removeToken(token);
+        Object.values(proxyInstances).forEach((proxy) => proxy.removeToken(token));
         fastify.server.emit('warn', `Invalid token detected (${token}).`);
       })
   );
@@ -184,12 +188,6 @@ if (require.main === module) {
       parseInt(process.env.PORT || '3000', 10)
     )
     .option('-t, --token <token>', 'GitHub token to be used', concatTokens, [])
-    .addOption(
-      new Option('--api <api>', 'API version to proxy requests')
-        .choices(Object.values(APIVersion))
-        .default(APIVersion.GraphQL)
-        .argParser((value) => value.toLowerCase())
-    )
     .addOption(
       new Option('--tokens <file>', 'File containing a list of tokens')
         .argParser(readTokensFile)
@@ -260,7 +258,6 @@ if (require.main === module) {
     );
 
     const appOptions: CliOpts = {
-      api: options.api,
       requestInterval: options.requestInterval,
       requestTimeout: options.requestTimeout,
       silent: options.silent,

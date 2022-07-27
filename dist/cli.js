@@ -55,19 +55,22 @@ var APIVersion;
     APIVersion["REST"] = "rest";
 })(APIVersion = exports.APIVersion || (exports.APIVersion = {}));
 class ProxyLogTransform extends stream_1.Transform {
+    api;
     started = false;
     config;
-    constructor() {
+    constructor(api) {
         super({ objectMode: true });
+        this.api = api;
         this.config = {
             columnDefault: { alignment: 'right', width: 5 },
             columns: {
-                0: { width: 5 },
-                1: { width: 3 },
-                2: { width: 5 },
-                3: { width: 18 },
-                4: { width: 4 },
-                5: { width: 7 }
+                0: { width: 7 },
+                1: { width: 5 },
+                2: { width: 3 },
+                3: { width: 5 },
+                4: { width: 18 },
+                5: { width: 4 },
+                6: { width: 7 }
             },
             border: (0, table_1.getBorderCharacters)('void'),
             singleLine: true
@@ -85,12 +88,10 @@ class ProxyLogTransform extends stream_1.Transform {
         if (!this.started) {
             this.started = true;
             this.push(chalk_1.default.bold('Columns: ') +
-                Object.keys(data)
-                    .map((v) => chalk_1.default.underline(v))
-                    .join(', ') +
+                ['api', ...Object.keys(data)].map((v) => chalk_1.default.underline(v)).join(', ') +
                 '\n\n');
         }
-        this.push((0, table_1.table)([Object.values(data)], this.config).trimEnd() + '\n');
+        this.push((0, table_1.table)([[this.api, ...Object.values(data)]], this.config).trimEnd() + '\n');
         done();
     }
 }
@@ -132,28 +133,26 @@ function createProxyServer(options) {
             healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
         }));
     });
-    const proxy = new router_1.default(tokens, options);
-    const scheduler = (req, reply) => {
-        proxy.schedule(req, reply);
-    };
-    const defaultHandler = (req, res) => {
-        res
-            .status(router_1.ProxyRouterResponse.PROXY_ERROR)
-            .send({ message: `Endpoint not supported for "${options.api}" api.` });
-    };
+    const proxyInstances = Object.values(APIVersion).reduce((memo, version) => {
+        const proxy = new router_1.default(tokens, options);
+        if (!options.silent)
+            proxy.pipe(new ProxyLogTransform(version).on('data', (data) => fastify.server.emit('log', data)));
+        return { ...memo, [version]: proxy };
+    }, {});
     fastify.route({
         method: ['DELETE', 'PATCH', 'PUT'],
         url: '/*',
-        handler: defaultHandler
+        handler: (req, res) => {
+            res.status(router_1.ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });
+        }
     });
-    if (options.api === APIVersion.GraphQL) {
-        fastify.post('/graphql', scheduler).get('/*', defaultHandler);
-    }
-    else {
-        fastify.get('/*', scheduler).post('/*', defaultHandler);
-    }
-    if (!options.silent)
-        proxy.pipe(new ProxyLogTransform().on('data', (data) => fastify.server.emit('log', data)));
+    fastify
+        .post('/graphql', (req, reply) => {
+        proxyInstances[APIVersion.GraphQL].schedule(req, reply);
+    })
+        .get('/*', (req, reply) => {
+        proxyInstances[APIVersion.REST].schedule(req, reply);
+    });
     tokens.map((token) => axios_1.default
         .get('https://api.github.com/user', {
         headers: {
@@ -164,7 +163,7 @@ function createProxyServer(options) {
         .catch((error) => {
         if (error.response?.status !== 401)
             return;
-        proxy.removeToken(token);
+        Object.values(proxyInstances).forEach((proxy) => proxy.removeToken(token));
         fastify.server.emit('warn', `Invalid token detected (${token}).`);
     }));
     return fastify;
@@ -175,10 +174,6 @@ if (require.main === module) {
     commander_1.program
         .option('-p, --port <port>', 'Port to start the proxy server', Number, parseInt(process.env.PORT || '3000', 10))
         .option('-t, --token <token>', 'GitHub token to be used', concatTokens, [])
-        .addOption(new commander_1.Option('--api <api>', 'API version to proxy requests')
-        .choices(Object.values(APIVersion))
-        .default(APIVersion.GraphQL)
-        .argParser((value) => value.toLowerCase()))
         .addOption(new commander_1.Option('--tokens <file>', 'File containing a list of tokens')
         .argParser(readTokensFile)
         .default(process.env.GPS_TOKENS_FILE))
@@ -202,7 +197,6 @@ if (require.main === module) {
     (async () => {
         const tokens = [...options.token, ...(options.tokens || [])].reduce((memo, token) => concatTokens(token, memo), []);
         const appOptions = {
-            api: options.api,
             requestInterval: options.requestInterval,
             requestTimeout: options.requestTimeout,
             silent: options.silent,
