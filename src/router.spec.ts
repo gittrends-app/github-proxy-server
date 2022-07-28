@@ -45,6 +45,7 @@ describe('Middleware constructor and methods', () => {
 describe('Middleware core', () => {
   let scope: nock.Scope;
   let middleware: Middleware;
+  let proxyServerPort: number;
 
   const requestTimeout = 1000;
   const requestInterval = 250;
@@ -64,7 +65,7 @@ describe('Middleware core', () => {
 
     fastify.get('*', (req, res) => middleware.schedule(req, res));
 
-    const proxyServerPort = await getPort();
+    proxyServerPort = await getPort();
     await fastify.listen(proxyServerPort, localServerHost);
 
     axiosClient = axios.create({ baseURL: `http://${localServerHost}:${proxyServerPort}` });
@@ -344,6 +345,20 @@ describe('Middleware core', () => {
       await expect(
         axiosClient.get('/', { headers: { authorization: tokenStr } })
       ).resolves.toBeDefined();
+    });
+
+    test('it should replace base url on response header', async () => {
+      const linkStr =
+        '<https://api.github.com/repositories/000/tags?page=2>; rel="next", <https://api.github.com/repositories/000/tags?page=10>; rel="last"';
+
+      const expectedLinkStr = linkStr.replace(
+        new RegExp('https://api.github.com', 'g'),
+        `http://${localServerHost}:${proxyServerPort}`
+      );
+
+      scope.get('/').reply(200, {}, { link: linkStr });
+
+      await expect(axiosClient.get('/')).resolves.toHaveProperty('headers.link', expectedLinkStr);
     });
   });
 });
