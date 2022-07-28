@@ -25,17 +25,31 @@ class ProxyWorker extends stream_1.Readable {
         this.reset = (Date.now() + 1000 * 60 * 60) / 1000;
         this.proxy = (0, http_proxy_1.createProxyServer)({
             target: 'https://api.github.com',
-            headers: { Authorization: `token ${token}` },
             proxyTimeout: opts.requestTimeout,
             ws: false,
             xfwd: true,
             changeOrigin: true
         });
         this.proxy.on('proxyReq', (proxyReq, req) => {
-            req.startedAt = new Date();
             req.proxyRequest = proxyReq;
+            req.startedAt = new Date();
+            req.hasAuthorization = opts.overrideAuthorization
+                ? false
+                : proxyReq.hasHeader('authorization');
+            if (!req.hasAuthorization)
+                proxyReq.setHeader('authorization', `token ${token}`);
         });
         this.proxy.on('proxyRes', (proxyRes, req) => {
+            const replaceURL = (url) => req.headers.host
+                ? url.replaceAll('https://api.github.com', `http://${req.headers.host}`)
+                : url;
+            proxyRes.headers.link =
+                proxyRes.headers.link &&
+                    (Array.isArray(proxyRes.headers.link)
+                        ? proxyRes.headers.link.map(replaceURL)
+                        : replaceURL(proxyRes.headers.link));
+            if (req.hasAuthorization)
+                return;
             this.updateLimits({
                 status: `${proxyRes.statusCode}`,
                 ...proxyRes.headers
@@ -51,14 +65,6 @@ class ProxyWorker extends stream_1.Readable {
                 return true;
             })
                 .join(', ');
-            const replaceURL = (url) => req.headers.host
-                ? url.replaceAll('https://api.github.com', `http://${req.headers.host}`)
-                : url;
-            proxyRes.headers.link =
-                proxyRes.headers.link &&
-                    (Array.isArray(proxyRes.headers.link)
-                        ? proxyRes.headers.link.map(replaceURL)
-                        : replaceURL(proxyRes.headers.link));
         });
         this.queue = new bottleneck_1.default({
             maxConcurrent: 1,

@@ -134,7 +134,7 @@ function createProxyServer(options) {
         }));
     });
     const proxyInstances = Object.values(APIVersion).reduce((memo, version) => {
-        const proxy = new router_1.default(tokens, options);
+        const proxy = new router_1.default(tokens, { overrideAuthorization: true, ...options });
         if (!options.silent)
             proxy.pipe(new ProxyLogTransform(version).on('data', (data) => fastify.server.emit('log', data)));
         return { ...memo, [version]: proxy };
@@ -185,6 +185,7 @@ if (require.main === module) {
         .option('--clustering-redis-port <port>', '(clustering) redis port', Number, parseInt(process.env.GPS_CLUSTERING_REDIS_PORT || '6379', 10))
         .option('--clustering-redis-db <db>', '(clustering) redis db', Number, parseInt(process.env.GPS_CLUSTERING_REDIS_PORT || '0', 10))
         .option('--silent', 'Dont show requests outputs', [undefined, 'false'].indexOf(process.env.GPS_SILENT) < 0)
+        .option('--no-override-authorization', 'By default, the authorization header is overrided with a configured token', false)
         .version(process.env.npm_package_version || '?', '-v, --version', 'output the current version')
         .parse();
     const options = commander_1.program.opts();
@@ -200,6 +201,7 @@ if (require.main === module) {
             requestInterval: options.requestInterval,
             requestTimeout: options.requestTimeout,
             silent: options.silent,
+            overrideAuthorization: !options.noOverrideAuthorization,
             tokens: tokens,
             clustering: !options.clustering
                 ? undefined
