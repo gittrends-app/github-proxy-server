@@ -9,6 +9,7 @@ import { PassThrough, Readable } from 'stream';
 type ProxyWorkerOpts = {
   requestTimeout: number;
   requestInterval: number;
+  overrideAuthorization?: boolean;
   clustering?: {
     host: string;
     port: number;
@@ -23,6 +24,7 @@ type ExtendedFastifyRequest = FastifyRequest & {
 
 type ExtendedIncomingMessage = IncomingMessage & {
   startedAt?: Date;
+  hasAuthorization?: boolean;
   proxyRequest?: ClientRequest;
 };
 
@@ -55,7 +57,6 @@ class ProxyWorker extends Readable {
 
     this.proxy = createProxyServer({
       target: 'https://api.github.com',
-      headers: { Authorization: `token ${token}` },
       proxyTimeout: opts.requestTimeout,
       ws: false,
       xfwd: true,
@@ -63,11 +64,29 @@ class ProxyWorker extends Readable {
     });
 
     this.proxy.on('proxyReq', (proxyReq, req: ExtendedIncomingMessage) => {
-      req.startedAt = new Date();
       req.proxyRequest = proxyReq;
+      req.startedAt = new Date();
+      req.hasAuthorization = opts.overrideAuthorization
+        ? false
+        : proxyReq.hasHeader('authorization');
+
+      if (!req.hasAuthorization) proxyReq.setHeader('authorization', `token ${token}`);
     });
 
     this.proxy.on('proxyRes', (proxyRes, req: ExtendedIncomingMessage) => {
+      const replaceURL = (url: string): string =>
+        req.headers.host
+          ? url.replaceAll('https://api.github.com', `http://${req.headers.host}`)
+          : url;
+
+      proxyRes.headers.link =
+        proxyRes.headers.link &&
+        (Array.isArray(proxyRes.headers.link)
+          ? proxyRes.headers.link.map(replaceURL)
+          : replaceURL(proxyRes.headers.link));
+
+      if (req.hasAuthorization) return;
+
       this.updateLimits({
         status: `${proxyRes.statusCode}`,
         ...(proxyRes.headers as Record<string, string>)
@@ -87,17 +106,6 @@ class ProxyWorker extends Readable {
           return true;
         })
         .join(', ');
-
-      const replaceURL = (url: string): string =>
-        req.headers.host
-          ? url.replaceAll('https://api.github.com', `http://${req.headers.host}`)
-          : url;
-
-      proxyRes.headers.link =
-        proxyRes.headers.link &&
-        (Array.isArray(proxyRes.headers.link)
-          ? proxyRes.headers.link.map(replaceURL)
-          : replaceURL(proxyRes.headers.link));
     });
 
     this.queue = new Bottleneck({

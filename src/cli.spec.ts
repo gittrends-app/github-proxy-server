@@ -132,7 +132,8 @@ describe('Test cli utils', () => {
         tokens: [repeat('0', 40)],
         minRemaining: 0,
         requestInterval: 100,
-        requestTimeout: 500
+        requestTimeout: 500,
+        silent: true
       };
 
       client = axios.create({ baseURL: `http://${address()}:${port}` });
@@ -154,7 +155,7 @@ describe('Test cli utils', () => {
     });
 
     test(`it should accept GET requests`, async () => {
-      fastify = await createLocalProxyServer({ ...params });
+      fastify = await createLocalProxyServer(params);
       await expect(client.get('/')).resolves.toBeDefined();
       await expect(client.post('/')).rejects.toThrowError();
       await expect(client.put('/')).rejects.toThrowError();
@@ -162,7 +163,7 @@ describe('Test cli utils', () => {
     });
 
     test(`it should accept POSTs only to /graphql`, async () => {
-      fastify = await createLocalProxyServer({ ...params });
+      fastify = await createLocalProxyServer(params);
       await expect(client.post('/graphql')).resolves.toBeDefined();
     });
 
@@ -191,17 +192,39 @@ describe('Test cli utils', () => {
     });
 
     test('it should warn when invalid token are detected', async () => {
-      fastify = await createLocalProxyServer({
-        ...params,
-        tokens: [repeat('i', 40)],
-        silent: true
-      });
+      fastify = await createLocalProxyServer({ ...params, tokens: [repeat('i', 40)] });
 
       const warns: string[] = [];
       fastify.server.on('warn', (data) => warns.push(data.toString()));
 
       await new Promise((resolve) => setTimeout(resolve, 1000));
       expect(warns.length).toBe(1);
+    });
+
+    test('it should not pass authorization tokens by default', async () => {
+      fastify = await createLocalProxyServer(params);
+
+      await expect(
+        client.get('/user', {
+          validateStatus: (code) => code === 200,
+          headers: { Authorization: `token ${repeat('i', 40)}` }
+        })
+      ).resolves.toBeDefined();
+
+      await expect(client.get('/user')).resolves.toBeDefined();
+    });
+
+    test('it should allow users to user own authorization tokens', async () => {
+      fastify = await createLocalProxyServer({ ...params, overrideAuthorization: false });
+
+      await expect(
+        client.get('/user', {
+          validateStatus: (code) => code === 200,
+          headers: { Authorization: `token ${repeat('i', 40)}` }
+        })
+      ).rejects.toThrowError();
+
+      await expect(client.get('/user')).resolves.toBeDefined();
     });
   });
 });

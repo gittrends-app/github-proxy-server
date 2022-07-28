@@ -133,7 +133,7 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
 
   const proxyInstances: { [key: string]: ProxyRouter } = Object.values(APIVersion).reduce(
     (memo, version) => {
-      const proxy = new ProxyRouter(tokens, options);
+      const proxy = new ProxyRouter(tokens, { overrideAuthorization: true, ...options });
 
       if (!options.silent)
         proxy.pipe(
@@ -238,6 +238,11 @@ if (require.main === module) {
       'Dont show requests outputs',
       [undefined, 'false'].indexOf(process.env.GPS_SILENT) < 0
     )
+    .option(
+      '--no-override-authorization',
+      'By default, the authorization header is overrided with a configured token',
+      false
+    )
     .version(process.env.npm_package_version || '?', '-v, --version', 'output the current version')
     .parse();
 
@@ -261,6 +266,7 @@ if (require.main === module) {
       requestInterval: options.requestInterval,
       requestTimeout: options.requestTimeout,
       silent: options.silent,
+      overrideAuthorization: !options.noOverrideAuthorization,
       tokens: tokens,
       clustering: !options.clustering
         ? undefined

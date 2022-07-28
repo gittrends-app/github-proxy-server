@@ -55,7 +55,13 @@ describe('Middleware core', () => {
 
     fastify = Fastify({});
 
-    middleware = new Middleware([FAKE_TOKEN], { requestInterval, requestTimeout, minRemaining: 0 });
+    middleware = new Middleware([FAKE_TOKEN], {
+      requestInterval,
+      requestTimeout,
+      minRemaining: 0,
+      overrideAuthorization: false
+    });
+
     fastify.get('*', (req, res) => middleware.schedule(req, res));
 
     const proxyServerPort = await getPort();
@@ -314,6 +320,30 @@ describe('Middleware core', () => {
 
       await expect(axiosClient.get('/')).rejects.toHaveProperty('response.status', 401);
       await expect(axiosClient.get('/')).rejects.toHaveProperty('response.status', 401);
+    });
+
+    test('it should allow users to override authorization header', async () => {
+      const token = repeat('i', 40);
+      const tokenStr = `token ${token}`;
+
+      scope.get('/').matchHeader('authorization', tokenStr).reply(401).get('/').reply(200);
+
+      await expect(
+        axiosClient.get('/', { headers: { authorization: tokenStr } })
+      ).rejects.toHaveProperty('response.status', 401);
+      await expect(axiosClient.get('/')).resolves.toBeDefined();
+
+      middleware.destroy();
+      middleware = new Middleware([FAKE_TOKEN], {
+        requestInterval,
+        requestTimeout,
+        minRemaining: 0,
+        overrideAuthorization: true
+      });
+
+      await expect(
+        axiosClient.get('/', { headers: { authorization: tokenStr } })
+      ).resolves.toBeDefined();
     });
   });
 });
