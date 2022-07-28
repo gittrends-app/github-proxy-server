@@ -1,6 +1,6 @@
 {
   "name": "@gittrends-app/github-proxy-server",
-  "version": "7.2.0",
+  "version": "7.3.0",
   "main": "./dist/middleware.js",
   "types": "./dist/middleware.d.ts",
   "repository": "git@github.com:gittrends-app/github-proxy-server.git",
