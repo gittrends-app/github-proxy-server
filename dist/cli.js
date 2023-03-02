@@ -38,13 +38,13 @@ const dayjs_1 = __importDefault(require("dayjs"));
 const relativeTime_1 = __importDefault(require("dayjs/plugin/relativeTime"));
 const dotenv_override_true_1 = require("dotenv-override-true");
 const events_1 = require("events");
-const express_status_monitor_1 = __importDefault(require("express-status-monitor"));
 const fastify_1 = __importDefault(require("fastify"));
 const fs_1 = require("fs");
 const ip_1 = require("ip");
 const lodash_1 = require("lodash");
 const path_1 = require("path");
 const stream_1 = require("stream");
+const swagger_stats_1 = __importDefault(require("swagger-stats"));
 const table_1 = require("table");
 const router_1 = __importStar(require("./router"));
 (0, dotenv_override_true_1.config)({ path: (0, path_1.resolve)(__dirname, '.env.version') });
@@ -129,8 +129,10 @@ function createProxyServer(options) {
     fastify.removeAllContentTypeParsers();
     fastify.addContentTypeParser('*', {}, (req, payload, done) => done(null, req.body));
     fastify.register(express_1.default).after(() => {
-        fastify.use((0, express_status_monitor_1.default)({
-            healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
+        fastify.use(swagger_stats_1.default.getMiddleware({
+            name: 'GitHub Proxy Server',
+            version: process.env.npm_package_version,
+            uriPath: '/status'
         }));
     });
     const proxyInstances = Object.values(APIVersion).reduce((memo, version) => {

@@ -10,13 +10,13 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { config } from 'dotenv-override-true';
 import { EventEmitter } from 'events';
-import statusMonitor from 'express-status-monitor';
 import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { existsSync, readFileSync } from 'fs';
 import { address } from 'ip';
 import { compact, isNil, isObjectLike, omit, omitBy, uniq } from 'lodash';
 import { resolve } from 'path';
 import { Transform } from 'stream';
+import swaggerStats from 'swagger-stats';
 import { TableUserConfig, getBorderCharacters, table } from 'table';
 
 import ProxyRouter, { ProxyRouterOpts, ProxyRouterResponse, WorkerLogger } from './router';
@@ -125,8 +125,10 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
 
   fastify.register(fastifyExpress).after(() => {
     fastify.use(
-      statusMonitor({
-        healthChecks: [{ protocol: 'https', host: 'api.github.com', path: '/', port: 443 }]
+      swaggerStats.getMiddleware({
+        name: 'GitHub Proxy Server',
+        version: process.env.npm_package_version,
+        uriPath: '/status'
       })
     );
   });
