@@ -148,7 +148,10 @@ export function createProxyServer(options: CliOpts): Express {
 
   const proxyInstances: { [key: string]: ProxyRouter } = Object.values(APIVersion).reduce(
     (memo, version) => {
-      const proxy = new ProxyRouter(tokens, { overrideAuthorization: true, ...options });
+      const proxy = new ProxyRouter(tokens, {
+        overrideAuthorization: options.overrideAuthorization ?? true,
+        ...options
+      });
 
       if (!options.silent)
         proxy.pipe(new ProxyLogTransform(version).on('data', (data) => app.emit('log', data)));
@@ -195,69 +198,73 @@ export function createProxyServer(options: CliOpts): Express {
 // parse arguments from command line
 if (require.main === module) {
   program
-    .option(
-      '-p, --port <port>',
-      'Port to start the proxy server',
-      Number,
-      parseInt(process.env.PORT || '3000', 10)
-    )
-    .option('-t, --token <token>', 'GitHub token to be used', concatTokens, [])
     .addOption(
-      new Option('--tokens <file>', 'File containing a list of tokens')
+      new Option('-p, --port [port]', 'Port to start the proxy server')
+        .argParser(Number)
+        .default(3000)
+        .env('PORT')
+    )
+    .addOption(
+      new Option('-t, --token [token]', 'GitHub token to be used')
+        .argParser(concatTokens)
+        .default([])
+    )
+    .addOption(
+      new Option('--tokens [file]', 'File containing a list of tokens')
         .argParser(readTokensFile)
-        .default(process.env.GPS_TOKENS_FILE)
+        .env('GPS_TOKENS_FILE')
     )
-    .option(
-      '--request-interval <interval>',
-      'Interval between requests (ms)',
-      Number,
-      parseInt(process.env.GPS_REQUEST_INTERVAL || '250', 10)
+    .addOption(
+      new Option('--request-interval [interval]', 'Interval between requests (ms)')
+        .argParser(Number)
+        .default(250)
+        .env('GPS_REQUEST_INTERVAL')
     )
-    .option(
-      '--request-timeout <timeout>',
-      'Request timeout (ms)',
-      Number,
-      parseInt(process.env.GPS_REQUEST_TIMEOUT || '20000', 10)
+    .addOption(
+      new Option('--request-timeout [timeout]', 'Request timeout (ms)')
+        .argParser(Number)
+        .default(30000)
+        .env('GPS_REQUEST_TIMEOUT')
     )
-    .option(
-      '--min-remaining <number>',
-      'Stop using token on',
-      Number,
-      parseInt(process.env.GPS_MIN_REMAINING || '100', 10)
+    .addOption(
+      new Option('--min-remaining <number>', 'Stop using token on a minimum of')
+        .argParser(Number)
+        .default(100)
+        .env('GPS_MIN_REMAINING')
     )
-    .option(
-      '--clustering',
-      'Enable clustering mode (require redis)',
-      [undefined, 'false'].indexOf(process.env.GPS_CLUSTERING) < 0
+    .addOption(
+      new Option('--clustering', '(clustering) enable clustering (requires redis)')
+        .default(false)
+        .env('GPS_CLUSTERING_HOST')
     )
-    .option(
-      '--clustering-redis-host <host>',
-      '(clustering) redis host',
-      process.env.GPS_CLUSTERING_REDIS_HOST || 'localhost'
+    .addOption(
+      new Option('--clustering-host [host]', '(clustering) redis host')
+        .implies({ clustering: true })
+        .default('localhost')
+        .env('GPS_CLUSTERING_HOST')
     )
-    .option(
-      '--clustering-redis-port <port>',
-      '(clustering) redis port',
-      Number,
-      parseInt(process.env.GPS_CLUSTERING_REDIS_PORT || '6379', 10)
+    .addOption(
+      new Option('--clustering-port [port]', '(clustering) redis port')
+        .argParser(Number)
+        .implies({ clustering: true })
+        .default(6379)
+        .env('GPS_CLUSTERING_PORT')
     )
-    .option(
-      '--clustering-redis-db <db>',
-      '(clustering) redis db',
-      Number,
-      parseInt(process.env.GPS_CLUSTERING_REDIS_PORT || '0', 10)
+    .addOption(
+      new Option('--clustering-db [db]', '(clustering) redis db')
+        .argParser(Number)
+        .implies({ clustering: true })
+        .default(0)
+        .env('GPS_CLUSTERING_DB')
     )
-    .option(
-      '--silent',
-      'Dont show requests outputs',
-      [undefined, 'false'].indexOf(process.env.GPS_SILENT) < 0
+    .addOption(new Option('--silent', 'Dont show requests outputs'))
+    .addOption(
+      new Option(
+        '--no-override-authorization',
+        'By default, the authorization header is overrided with a configured token'
+      )
     )
-    .option(
-      '--no-override-authorization',
-      'By default, the authorization header is overrided with a configured token',
-      false
-    )
-    .option('--no-status-monitor', 'Disable requests monitoring on /status')
+    .addOption(new Option('--no-status-monitor', 'Disable requests monitoring on /status'))
     .version(process.env.npm_package_version || '?', '-v, --version', 'output the current version')
     .parse();
 
@@ -281,15 +288,15 @@ if (require.main === module) {
       requestInterval: options.requestInterval,
       requestTimeout: options.requestTimeout,
       silent: options.silent,
-      overrideAuthorization: !options.noOverrideAuthorization,
+      overrideAuthorization: options.overrideAuthorization,
       tokens: tokens,
-      clustering: !options.clustering
-        ? undefined
-        : {
-            host: options.clusteringRedisHost,
-            port: options.clusteringRedisPort,
-            db: options.clusteringRedisDb
-          },
+      clustering: options.clustering
+        ? {
+            host: options.clusteringHost,
+            port: options.clusteringPort,
+            db: options.clusteringDb
+          }
+        : undefined,
       minRemaining: options.minRemaining,
       statusMonitor: options.statusMonitor
     };
