@@ -56,6 +56,7 @@
     "ioredis": "^5.0.4",
     "ip": "^1.1.7",
     "lodash": "^4.17.21",
+    "prom-client": "^14.1.1",
     "response-time": "^2.3.2",
     "swagger-stats": "^0.99.5",
     "table": "^6.8.0"
