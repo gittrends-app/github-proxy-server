@@ -128,13 +128,15 @@ function createProxyServer(options) {
     const fastify = (0, fastify_1.default)({ logger: process.env.DEBUG == 'true' });
     fastify.removeAllContentTypeParsers();
     fastify.addContentTypeParser('*', {}, (req, payload, done) => done(null, req.body));
-    fastify.register(express_1.default).after(() => {
-        fastify.use(swagger_stats_1.default.getMiddleware({
-            name: 'GitHub Proxy Server',
-            version: process.env.npm_package_version,
-            uriPath: '/status'
-        }));
-    });
+    if (options.statusMonitor) {
+        fastify.register(express_1.default).after(() => {
+            fastify.use(swagger_stats_1.default.getMiddleware({
+                name: 'GitHub Proxy Server',
+                version: process.env.npm_package_version,
+                uriPath: '/status'
+            }));
+        });
+    }
     const proxyInstances = Object.values(APIVersion).reduce((memo, version) => {
         const proxy = new router_1.default(tokens, { overrideAuthorization: true, ...options });
         if (!options.silent)
@@ -188,6 +190,7 @@ if (require.main === module) {
         .option('--clustering-redis-db <db>', '(clustering) redis db', Number, parseInt(process.env.GPS_CLUSTERING_REDIS_PORT || '0', 10))
         .option('--silent', 'Dont show requests outputs', [undefined, 'false'].indexOf(process.env.GPS_SILENT) < 0)
         .option('--no-override-authorization', 'By default, the authorization header is overrided with a configured token', false)
+        .option('--no-status-monitor', 'Disable requests monitoring on /status')
         .version(process.env.npm_package_version || '?', '-v, --version', 'output the current version')
         .parse();
     const options = commander_1.program.opts();
@@ -212,7 +215,8 @@ if (require.main === module) {
                     port: options.clusteringRedisPort,
                     db: options.clusteringRedisDb
                 },
-            minRemaining: options.minRemaining
+            minRemaining: options.minRemaining,
+            statusMonitor: options.statusMonitor
         };
         const app = createProxyServer(appOptions);
         app.server
