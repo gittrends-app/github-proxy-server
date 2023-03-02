@@ -1,9 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from '@jest/globals';
 import axios, { AxiosInstance } from 'axios';
 import { exec } from 'child_process';
-import { FastifyInstance } from 'fastify';
 import { writeFileSync } from 'fs';
 import getPort from 'get-port';
+import { Server } from 'http';
 import { address } from 'ip';
 import { repeat, times } from 'lodash';
 import nock from 'nock';
@@ -106,7 +106,7 @@ describe('Test cli utils', () => {
   describe(`Test create proxy server`, () => {
     let params: CliOpts;
     let port: number;
-    let fastify: FastifyInstance;
+    let server: Server;
     let client: AxiosInstance;
 
     beforeAll(() => {
@@ -142,13 +142,20 @@ describe('Test cli utils', () => {
     });
 
     afterEach(async () => {
-      if (fastify) await fastify.close();
+      if (server && server.listening) await new Promise((resolve) => server.close(resolve));
     });
 
     async function createLocalProxyServer(args: CliOpts) {
       const app = createProxyServer(args);
-      await app.listen(port, address());
-      return app;
+
+      return new Promise<Server>((resolve, reject) => {
+        const _server: Server = app.listen({ host: address(), port }, (err?: Error) =>
+          err ? reject(err) : resolve(_server)
+        );
+
+        app.on('log', (val) => _server.emit('log', val));
+        app.on('warn', (val) => _server.emit('warn', val));
+      });
     }
 
     test('it should throw an error if no valid tokens are provided', async () => {
@@ -157,7 +164,7 @@ describe('Test cli utils', () => {
     });
 
     test(`it should accept GET requests`, async () => {
-      fastify = await createLocalProxyServer(params);
+      server = await createLocalProxyServer(params);
       await expect(client.get('/')).resolves.toBeDefined();
       await expect(client.post('/')).rejects.toThrowError();
       await expect(client.put('/')).rejects.toThrowError();
@@ -165,15 +172,15 @@ describe('Test cli utils', () => {
     });
 
     test(`it should accept POSTs only to /graphql`, async () => {
-      fastify = await createLocalProxyServer(params);
+      server = await createLocalProxyServer(params);
       await expect(client.post('/graphql')).resolves.toBeDefined();
     });
 
     test(`it should log the requests when enabled`, async () => {
-      fastify = await createLocalProxyServer({ ...params, silent: false });
+      server = await createLocalProxyServer({ ...params, silent: false });
 
       const logs: string[] = [];
-      fastify.server.on('log', (data) => logs.push(data.toString()));
+      server.on('log', (data) => logs.push(data.toString()));
 
       await expect(client.get('/')).resolves.toBeDefined();
       expect(logs.length).toBeGreaterThan(0);
@@ -184,27 +191,27 @@ describe('Test cli utils', () => {
     });
 
     test(`it should disable logs when disabled`, async () => {
-      fastify = await createLocalProxyServer({ ...params, silent: true });
+      server = await createLocalProxyServer({ ...params, silent: true });
 
       const logs: string[] = [];
-      fastify.server.on('log', (data) => logs.push(data.toString()));
+      server.on('log', (data) => logs.push(data.toString()));
 
       await expect(client.get('/')).resolves.toBeDefined();
       expect(logs.length).toBe(0);
     });
 
     test('it should warn when invalid token are detected', async () => {
-      fastify = await createLocalProxyServer({ ...params, tokens: [repeat('i', 40)] });
+      server = await createLocalProxyServer({ ...params, tokens: [repeat('i', 40)] });
 
       const warns: string[] = [];
-      fastify.server.on('warn', (data) => warns.push(data.toString()));
+      server.on('warn', (data) => warns.push(data.toString()));
 
       await new Promise((resolve) => setTimeout(resolve, 1000));
       expect(warns.length).toBe(1);
     });
 
     test('it should not pass authorization tokens by default', async () => {
-      fastify = await createLocalProxyServer(params);
+      server = await createLocalProxyServer(params);
 
       await expect(
         client.get('/user', {
@@ -217,7 +224,7 @@ describe('Test cli utils', () => {
     });
 
     test('it should allow users to user own authorization tokens', async () => {
-      fastify = await createLocalProxyServer({ ...params, overrideAuthorization: false });
+      server = await createLocalProxyServer({ ...params, overrideAuthorization: false });
 
       await expect(
         client.get('/user', {

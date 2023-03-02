@@ -1,16 +1,16 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from '@jest/globals';
 import axios, { AxiosInstance } from 'axios';
-import Fastify, { FastifyInstance } from 'fastify';
+import express, { Express } from 'express';
 import getPort from 'get-port';
+import { Server } from 'http';
 import { address } from 'ip';
 import { range, repeat, times } from 'lodash';
 import nock from 'nock';
 
 import Middleware, { ProxyRouterResponse } from './router';
 
-axios.defaults.adapter = require('axios/lib/adapters/http');
-
-let fastify: FastifyInstance;
+let app: Express;
+let server: Server;
 let axiosClient: AxiosInstance;
 
 const localServerHost: string = address();
@@ -54,7 +54,7 @@ describe('Middleware core', () => {
     if (!nock.isActive()) nock.activate();
     scope = nock('https://api.github.com', { allowUnmocked: false }).persist();
 
-    fastify = Fastify({});
+    app = express();
 
     middleware = new Middleware([FAKE_TOKEN], {
       requestInterval,
@@ -63,11 +63,9 @@ describe('Middleware core', () => {
       overrideAuthorization: false
     });
 
-    fastify.get('*', (req, res) => middleware.schedule(req, res));
+    app.get('*', (req, res) => middleware.schedule(req, res));
 
-    proxyServerPort = await getPort();
-    await fastify.listen(proxyServerPort, localServerHost);
-
+    server = app.listen({ host: localServerHost, port: (proxyServerPort = await getPort()) });
     axiosClient = axios.create({ baseURL: `http://${localServerHost}:${proxyServerPort}` });
   });
 
@@ -77,9 +75,9 @@ describe('Middleware core', () => {
 
     middleware.destroy();
 
-    if (fastify.server.listening)
+    if (server.listening)
       await new Promise<void>((resolve, reject) =>
-        fastify.server.close((error) => (error ? reject(error) : resolve()))
+        server.close((error) => (error ? reject(error) : resolve()))
       );
   });
 

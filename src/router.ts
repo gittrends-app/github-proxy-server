@@ -1,6 +1,6 @@
 /* Author: Hudson S. Borges */
 import Bottleneck from 'bottleneck';
-import { FastifyReply, FastifyRequest } from 'fastify';
+import { Request, Response } from 'express';
 import { ClientRequest, IncomingMessage } from 'http';
 import Server, { createProxyServer } from 'http-proxy';
 import { min, shuffle } from 'lodash';
@@ -17,7 +17,7 @@ type ProxyWorkerOpts = {
   };
 };
 
-type ExtendedFastifyRequest = FastifyRequest & {
+type ExtendedRequest = Request & {
   startedAt?: Date;
   proxyRequest?: ClientRequest;
 };
@@ -126,25 +126,23 @@ class ProxyWorker extends Readable {
         : { datastore: 'local' })
     });
 
-    this.schedule = this.queue.wrap(
-      async (req: ExtendedFastifyRequest, res: FastifyReply): Promise<void> => {
-        if (req.socket.destroyed) return this.log();
+    this.schedule = this.queue.wrap(async (req: ExtendedRequest, res: Response): Promise<void> => {
+      if (req.socket.destroyed) return this.log();
 
-        await new Promise((resolve, reject) => {
-          req.socket.on('close', resolve);
-          this.proxy.web(req.raw, res.raw, undefined, (error) => reject(error));
+      await new Promise((resolve, reject) => {
+        req.socket.on('close', resolve);
+        this.proxy.web(req, res as never, undefined, (error) => reject(error));
+      })
+        .catch(async (error) => {
+          this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
+
+          if (!req.socket.destroyed && !req.socket.writableFinished)
+            res.status(ProxyRouterResponse.PROXY_ERROR).send(error);
+
+          req.proxyRequest?.destroy();
         })
-          .catch(async (error) => {
-            this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
-
-            if (!req.socket.destroyed && !req.socket.writableFinished)
-              res.status(ProxyRouterResponse.PROXY_ERROR).send(error);
-
-            req.proxyRequest?.destroy();
-          })
-          .finally(() => new Promise((resolve) => setTimeout(resolve, opts.requestInterval)));
-      }
-    );
+        .finally(() => new Promise((resolve) => setTimeout(resolve, opts.requestInterval)));
+    });
 
     this.on('close', () => this.resetTimeout && clearTimeout(this.resetTimeout));
   }
@@ -219,7 +217,7 @@ export default class ProxyRouter extends PassThrough {
   }
 
   // function to select the best client and queue request
-  async schedule(req: FastifyRequest, res: FastifyReply): Promise<void> {
+  async schedule(req: Request, res: Response): Promise<void> {
     const client = shuffle(this.clients).reduce(
       (selected: ProxyWorker | null, client) =>
         !selected ||
@@ -230,10 +228,11 @@ export default class ProxyRouter extends PassThrough {
     );
 
     if (!client || client.remaining <= this.options.minRemaining) {
-      return res.status(ProxyRouterResponse.NO_REQUESTS).send({
+      res.status(ProxyRouterResponse.NO_REQUESTS).json({
         message: 'Proxy Server: no requests available',
         reset: min(this.clients.map((client) => client.reset))
       });
+      return;
     }
 
     return client.schedule(req, res);

@@ -88,7 +88,7 @@ class ProxyWorker extends stream_1.Readable {
                 return this.log();
             await new Promise((resolve, reject) => {
                 req.socket.on('close', resolve);
-                this.proxy.web(req.raw, res.raw, undefined, (error) => reject(error));
+                this.proxy.web(req, res, undefined, (error) => reject(error));
             })
                 .catch(async (error) => {
                 this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
@@ -169,10 +169,11 @@ class ProxyRouter extends stream_1.PassThrough {
             ? client
             : selected, null);
         if (!client || client.remaining <= this.options.minRemaining) {
-            return res.status(ProxyRouterResponse.NO_REQUESTS).send({
+            res.status(ProxyRouterResponse.NO_REQUESTS).json({
                 message: 'Proxy Server: no requests available',
                 reset: (0, lodash_1.min)(this.clients.map((client) => client.reset))
             });
+            return;
         }
         return client.schedule(req, res);
     }

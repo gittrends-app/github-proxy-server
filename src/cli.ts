@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 /* Author: Hudson S. Borges */
-import fastifyExpress from '@fastify/express';
 import axios from 'axios';
 import chalk from 'chalk';
 import { Option, program } from 'commander';
@@ -10,11 +9,14 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { config } from 'dotenv-override-true';
 import { EventEmitter } from 'events';
-import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import express, { Express, Request, Response } from 'express';
 import { existsSync, readFileSync } from 'fs';
 import { address } from 'ip';
 import { compact, isNil, isObjectLike, omit, omitBy, uniq } from 'lodash';
 import { resolve } from 'path';
+import pino from 'pino';
+import pinoHttp from 'pino-http';
+import pinoPretty from 'pino-pretty';
 import { Transform } from 'stream';
 import swaggerStats from 'swagger-stats';
 import { TableUserConfig, getBorderCharacters, table } from 'table';
@@ -113,27 +115,35 @@ export type CliOpts = ProxyRouterOpts & {
   statusMonitor?: boolean;
 };
 
-export function createProxyServer(options: CliOpts): FastifyInstance {
+export function createProxyServer(options: CliOpts): Express {
   const tokens = compact(options.tokens).reduce(
     (memo: string[], token: string) => concatTokens(token, memo),
     []
   );
 
-  const fastify = Fastify({ logger: process.env.DEBUG == 'true' });
+  const app = express();
 
-  fastify.removeAllContentTypeParsers();
-  fastify.addContentTypeParser('*', {}, (req, payload, done) => done(null, req.body));
+  if (process.env.DEBUG === 'true') {
+    app.use(
+      pinoHttp({
+        level: 'info',
+        serializers: {
+          req: (req) => ({ method: req.method, url: req.url }),
+          res: ({ statusCode }) => ({ statusCode })
+        },
+        logger: pino(pinoPretty({ colorize: true }))
+      }) as never
+    );
+  }
 
   if (options.statusMonitor) {
-    fastify.register(fastifyExpress).after(() => {
-      fastify.use(
-        swaggerStats.getMiddleware({
-          name: 'GitHub Proxy Server',
-          version: process.env.npm_package_version,
-          uriPath: '/status'
-        })
-      );
-    });
+    app.use(
+      swaggerStats.getMiddleware({
+        name: 'GitHub Proxy Server',
+        version: process.env.npm_package_version,
+        uriPath: '/status'
+      })
+    );
   }
 
   const proxyInstances: { [key: string]: ProxyRouter } = Object.values(APIVersion).reduce(
@@ -141,29 +151,28 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
       const proxy = new ProxyRouter(tokens, { overrideAuthorization: true, ...options });
 
       if (!options.silent)
-        proxy.pipe(
-          new ProxyLogTransform(version).on('data', (data) => fastify.server.emit('log', data))
-        );
+        proxy.pipe(new ProxyLogTransform(version).on('data', (data) => app.emit('log', data)));
+
       return { ...memo, [version]: proxy };
     },
     {}
   );
 
-  fastify.route({
-    method: ['DELETE', 'PATCH', 'PUT'],
-    url: '/*',
-    handler: (req: FastifyRequest, res: FastifyReply) => {
-      res.status(ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });
-    }
-  });
+  function notSupported(req: Request, res: Response) {
+    res.status(ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });
+  }
 
-  fastify
-    .post('/graphql', (req: FastifyRequest, reply: FastifyReply) => {
-      proxyInstances[APIVersion.GraphQL].schedule(req, reply);
-    })
-    .get('/*', (req: FastifyRequest, reply: FastifyReply) => {
-      proxyInstances[APIVersion.REST].schedule(req, reply);
-    });
+  app.delete('/*', notSupported);
+  app.patch('/*', notSupported);
+  app.put('/*', notSupported);
+
+  app
+    .post('/graphql', (req: Request, reply: Response) =>
+      proxyInstances[APIVersion.GraphQL].schedule(req, reply)
+    )
+    .get('/*', (req: Request, reply: Response) =>
+      proxyInstances[APIVersion.REST].schedule(req, reply)
+    );
 
   tokens.map((token) =>
     axios
@@ -176,11 +185,11 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
       .catch((error) => {
         if (error.response?.status !== 401) return;
         Object.values(proxyInstances).forEach((proxy) => proxy.removeToken(token));
-        fastify.server.emit('warn', `Invalid token detected (${token}).`);
+        app.emit('warn', `Invalid token detected (${token}).`);
       })
   );
 
-  return fastify;
+  return app;
 }
 
 // parse arguments from command line
@@ -287,50 +296,51 @@ if (require.main === module) {
 
     const app = createProxyServer(appOptions);
 
-    app.server
-      .on('warn', consola.warn)
-      .on('log', (data) => process.stdout.write(data.toString()))
-      .on('listening', () => {
-        const host = `http://${address()}:${options.port}`;
-        consola.success(
-          `Proxy server running on ${host} (tokens: ${chalk.greenBright(tokens.length)})`
-        );
+    app.on('warn', consola.warn).on('log', (data) => process.stdout.write(data.toString()));
 
-        function formatObject(object: Record<string, unknown>): string {
-          return Object.entries(omitBy(object, (value) => isNil(value)))
-            .sort((a: [string, unknown], b: [string, unknown]) => (a[0] > b[0] ? 1 : -1))
-            .map(
-              ([k, v]) =>
-                `${k}: ${
-                  isObjectLike(v)
-                    ? `{ ${formatObject(v as Record<string, unknown>)} }`
-                    : chalk.greenBright(v)
-                }`
-            )
-            .join(', ');
-        }
-
-        consola.success(
-          `${chalk.bold('Options')}: %s`,
-          formatObject(omit(appOptions, ['token', 'tokens']))
-        );
-      })
-      .on('error', (error) => {
+    const server = app.listen({ host: '0.0.0.0', port: options.port }, (error?: Error) => {
+      if (error) {
         consola.error(error);
-        app.server.close();
         process.exit(1);
-      });
+      }
 
-    await app.listen(options.port, '0.0.0.0');
+      const host = `http://${address()}:${options.port}`;
+      consola.success(
+        `Proxy server running on ${host} (tokens: ${chalk.greenBright(tokens.length)})`
+      );
+
+      function formatObject(object: Record<string, unknown>): string {
+        return Object.entries(omitBy(object, (value) => isNil(value)))
+          .sort((a: [string, unknown], b: [string, unknown]) => (a[0] > b[0] ? 1 : -1))
+          .map(
+            ([k, v]) =>
+              `${k}: ${
+                isObjectLike(v)
+                  ? `{ ${formatObject(v as Record<string, unknown>)} }`
+                  : chalk.greenBright(v)
+              }`
+          )
+          .join(', ');
+      }
+
+      consola.success(
+        `${chalk.bold('Options')}: %s`,
+        formatObject(omit(appOptions, ['token', 'tokens']))
+      );
+    });
 
     process.on('SIGTERM', async () => {
       consola.info('SIGTERM signal received: closing HTTP server');
 
-      app
-        .close()
-        .finally(() => consola.success('Server closed'))
-        .then(() => process.exit(0))
-        .catch(() => process.exit(1));
+      server.close((err?: Error) => {
+        if (err) {
+          consola.error(err);
+          process.exit(1);
+        }
+
+        consola.success('Server closed');
+        process.exit(0);
+      });
     });
   })();
 }
