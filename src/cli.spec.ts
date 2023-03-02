@@ -27,9 +27,11 @@ type CliCmdResult = {
 
 async function cli(args: string[], cwd: string): Promise<CliCmdResult> {
   return new Promise((resolve) => {
-    exec(`npm run dev-no-reload ${args.join(' ')}`, { cwd }, (error, stdout, stderr) => {
-      resolve({ code: error?.code ?? 0, error, stdout, stderr });
-    });
+    exec(
+      `npm run dev-no-reload --no-status-monitor ${args.join(' ')}`,
+      { cwd },
+      (error, stdout, stderr) => resolve({ code: error?.code ?? 0, error, stdout, stderr })
+    );
   });
 }
 

@@ -110,6 +110,7 @@ export function readTokensFile(filename: string): string[] {
 export type CliOpts = ProxyRouterOpts & {
   tokens: string[];
   silent?: boolean;
+  statusMonitor?: boolean;
 };
 
 export function createProxyServer(options: CliOpts): FastifyInstance {
@@ -123,15 +124,17 @@ export function createProxyServer(options: CliOpts): FastifyInstance {
   fastify.removeAllContentTypeParsers();
   fastify.addContentTypeParser('*', {}, (req, payload, done) => done(null, req.body));
 
-  fastify.register(fastifyExpress).after(() => {
-    fastify.use(
-      swaggerStats.getMiddleware({
-        name: 'GitHub Proxy Server',
-        version: process.env.npm_package_version,
-        uriPath: '/status'
-      })
-    );
-  });
+  if (options.statusMonitor) {
+    fastify.register(fastifyExpress).after(() => {
+      fastify.use(
+        swaggerStats.getMiddleware({
+          name: 'GitHub Proxy Server',
+          version: process.env.npm_package_version,
+          uriPath: '/status'
+        })
+      );
+    });
+  }
 
   const proxyInstances: { [key: string]: ProxyRouter } = Object.values(APIVersion).reduce(
     (memo, version) => {
@@ -245,6 +248,7 @@ if (require.main === module) {
       'By default, the authorization header is overrided with a configured token',
       false
     )
+    .option('--no-status-monitor', 'Disable requests monitoring on /status')
     .version(process.env.npm_package_version || '?', '-v, --version', 'output the current version')
     .parse();
 
@@ -277,7 +281,8 @@ if (require.main === module) {
             port: options.clusteringRedisPort,
             db: options.clusteringRedisDb
           },
-      minRemaining: options.minRemaining
+      minRemaining: options.minRemaining,
+      statusMonitor: options.statusMonitor
     };
 
     const app = createProxyServer(appOptions);
