@@ -15,7 +15,6 @@
     "commit": "git-cz",
     "lint": "eslint src --ext .ts",
     "build": "rm -rf dist/* && tsc && npm run add-version",
-    "pkg": "npm run build && pkg . && chmod +x bin/*",
     "prepare": "node -e \"try { require('husky').install() } catch (e) {if (e.code !== 'MODULE_NOT_FOUND') throw e}\"",
     "prettier": "prettier --write --config .prettierrc.yml --ignore-path .prettierignore  '**/*.ts'",
     "version": "node -e 'console.log(process.env.npm_package_version)'",
@@ -28,11 +27,8 @@
   "np": {
     "yarn": true,
     "tests": true,
+    "publish": false,
     "message": "chore: v%s"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://npm.pkg.github.com"
   },
   "files": [
     "dist",
@@ -83,7 +79,6 @@
     "jest": "^29.7.0",
     "nock": "^13.5.4",
     "np": "^10.0.3",
-    "pkg": "^5.8.1",
     "prettier": "^3.2.5",
     "standard-version": "^9.5.0",
     "supertest": "^6.3.4",
@@ -97,9 +92,5 @@
     "commitizen": {
       "path": "./node_modules/cz-conventional-changelog"
     }
-  },
-  "pkg": {
-    "assets": "dist/.env.version",
-    "outputPath": "bin"
   }
 }
