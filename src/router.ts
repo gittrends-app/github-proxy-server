@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-duplicate-enum-values */
+
 /* Author: Hudson S. Borges */
 import Bottleneck from 'bottleneck';
 import { Request, Response } from 'express';
