@@ -165,17 +165,18 @@ export function createProxyServer(options: CliOpts): Express {
     res.status(ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });
   }
 
-  app.delete('/*', notSupported);
-  app.patch('/*', notSupported);
-  app.put('/*', notSupported);
-
   app
     .post('/graphql', (req: Request, reply: Response) =>
       proxyInstances[APIVersion.GraphQL].schedule(req, reply)
     )
     .get('/*', (req: Request, reply: Response) =>
       proxyInstances[APIVersion.REST].schedule(req, reply)
-    );
+  );
+
+  app.delete('/*', notSupported);
+  app.patch('/*', notSupported);
+  app.put('/*', notSupported);
+  app.post('/*', notSupported);
 
   tokens.map((token) =>
     axios

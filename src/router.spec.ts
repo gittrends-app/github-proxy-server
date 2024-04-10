@@ -1,19 +1,14 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from '@jest/globals';
-import axios, { AxiosInstance } from 'axios';
 import express, { Express } from 'express';
-import getPort from 'get-port';
-import { Server } from 'http';
-import { address } from 'ip';
+import { StatusCodes } from 'http-status-codes';
 import { range, repeat, times } from 'lodash';
 import nock from 'nock';
+import request from 'supertest';
 
 import Middleware, { ProxyRouterResponse } from './router';
 
 let app: Express;
-let server: Server;
-let axiosClient: AxiosInstance;
 
-const localServerHost: string = address();
 const FAKE_TOKEN = repeat('t', 40);
 
 async function waitPromise(milisseconds: number): Promise<void> {
@@ -45,13 +40,13 @@ describe('Middleware constructor and methods', () => {
 describe('Middleware core', () => {
   let scope: nock.Scope;
   let middleware: Middleware;
-  let proxyServerPort: number;
 
   const requestTimeout = 1000;
   const requestInterval = 250;
 
   beforeEach(async () => {
     if (!nock.isActive()) nock.activate();
+
     scope = nock('https://api.github.com', { allowUnmocked: false }).persist();
 
     app = express();
@@ -64,9 +59,6 @@ describe('Middleware core', () => {
     });
 
     app.get('*', (req, res) => middleware.schedule(req, res));
-
-    server = app.listen({ host: localServerHost, port: (proxyServerPort = await getPort()) });
-    axiosClient = axios.create({ baseURL: `http://${localServerHost}:${proxyServerPort}` });
   });
 
   afterEach(async () => {
@@ -74,11 +66,6 @@ describe('Middleware core', () => {
     nock.restore();
 
     middleware.destroy();
-
-    if (server.listening)
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve()))
-      );
   });
 
   afterAll(() => {
@@ -95,9 +82,7 @@ describe('Middleware core', () => {
     });
 
     test(`it should respond with Proxy Server Error (${ProxyRouterResponse.PROXY_ERROR})`, async () => {
-      return axiosClient.get('/').catch((error) => {
-        expect(error.response?.status).toBe(ProxyRouterResponse.PROXY_ERROR);
-      });
+      await request(app).get('/').expect(ProxyRouterResponse.PROXY_ERROR);
     });
   });
 
@@ -122,26 +107,22 @@ describe('Middleware core', () => {
 
       scope
         .get('/reset')
-        .reply(200, '', {
+        .reply(StatusCodes.OK, '', {
           'x-ratelimit-remaining': '0',
           'x-ratelimit-limit': '5000',
           'x-ratelimit-reset': `${Math.floor((Date.now() + waitInterval) / 1000)}`
         })
         .get('/')
-        .reply(200);
+        .reply(StatusCodes.OK);
 
-      await expect(axiosClient.get('/reset')).resolves.toBeDefined();
+      await request(app).get('/reset').expect(StatusCodes.OK);
 
-      await axiosClient
-        .get('/reset')
-        .catch(({ response }) => expect(response.status).toBe(ProxyRouterResponse.NO_REQUESTS));
+      await request(app).get('/reset').expect(ProxyRouterResponse.NO_REQUESTS);
 
       await waitPromise(waitInterval);
 
       middleware.removeToken(FAKE_TOKEN);
-      return axiosClient
-        .get('/')
-        .catch(({ response }) => expect(response.status).toBe(ProxyRouterResponse.NO_REQUESTS));
+      await request(app).get('/').expect(ProxyRouterResponse.NO_REQUESTS);
     });
 
     test('it should restore rate limite on reset time', async () => {
@@ -149,32 +130,38 @@ describe('Middleware core', () => {
 
       scope
         .get('/reset')
-        .reply(200, '', {
+        .reply(StatusCodes.OK, '', {
           'x-ratelimit-remaining': '0',
           'x-ratelimit-limit': '5000',
           'x-ratelimit-reset': `${Math.trunc((Date.now() + waitInterval) / 1000)}`
         })
         .get('/')
-        .reply(200);
+        .reply(StatusCodes.OK);
 
       for (let i = 0; i < 2; i++) {
-        await expect(axiosClient.get('/reset')).resolves.toBeDefined();
+        await request(app).get('/reset').expect(StatusCodes.OK);
         await Promise.all([
-          expect(axiosClient.get('/')).rejects.toBeDefined(),
+          request(app).get('/reset').expect(ProxyRouterResponse.NO_REQUESTS),
           waitPromise(waitInterval)
         ]);
-        await expect(axiosClient.get('/')).resolves.toBeDefined();
+        await request(app).get('/').expect(StatusCodes.OK);
       }
     });
 
     test('it should respect the interval between the requests', async () => {
-      scope.get('/').delay(100).reply(200);
+      scope.get('/').delay(100).reply(StatusCodes.OK);
 
       const promises: Promise<number>[] = [];
-      range(5).forEach(() => promises.push(axiosClient.get('/').then(() => Date.now())));
+      range(5).forEach(() =>
+        promises.push(
+          request(app)
+            .get('/')
+            .expect(StatusCodes.OK)
+            .then(() => Date.now())
+        )
+      );
 
       const results = await Promise.all(promises);
-      expect(results).toBeDefined();
 
       for (let index = 1; index < results.length; index++)
         expect(results[index]).toBeGreaterThan(results[index - 1] + requestInterval);
@@ -182,49 +169,50 @@ describe('Middleware core', () => {
 
     test('it should forward responses received from GitHub', async () => {
       scope.get('/').reply(200);
-      await axiosClient.get('/').then(({ status }) => expect(status).toEqual(200));
+      await request(app)
+        .get('/')
+        .then(({ status }) => expect(status).toEqual(200));
 
       scope.get('/300').reply(300);
-      await axiosClient
-        .get('/300', { maxRedirects: 0 })
+      await request(app)
+        .get('/300')
         .catch(({ response }) => expect(response.status).toEqual(300));
 
       scope.get('/400').reply(400);
-      await axiosClient.get('/400').catch(({ response }) => expect(response.status).toEqual(400));
+      await request(app)
+        .get('/400')
+        .catch(({ response }) => expect(response.status).toEqual(400));
 
       scope.get('/500').reply(500);
-      await axiosClient.get('/500').catch(({ response }) => expect(response.status).toEqual(500));
+      await request(app)
+        .get('/500')
+        .catch(({ response }) => expect(response.status).toEqual(500));
     });
 
     test('it should interrupt long requests', async () => {
       scope
         .get('/')
         .delay(requestTimeout * 2)
-        .reply(200);
+        .reply(StatusCodes.OK);
 
-      return axiosClient
-        .get('/')
-        .catch(({ response }) => expect(response.status).toBe(ProxyRouterResponse.PROXY_ERROR));
+      return request(app).get('/').expect(ProxyRouterResponse.PROXY_ERROR);
     });
 
     test('it should respond to broken connections', async () => {
       scope.get('/').delay(100).replyWithError(new Error('Server Error'));
 
-      return axiosClient
-        .get('/')
-        .catch(({ response }) => expect(response.status).toBe(ProxyRouterResponse.PROXY_ERROR));
+      return request(app).get('/').expect(ProxyRouterResponse.PROXY_ERROR);
     });
 
     test('it should not break proxy when client disconnect', async () => {
-      scope.get('/').delay(500).reply(200);
+      scope.get('/').delay(500).reply(StatusCodes.OK);
 
-      const source = axios.CancelToken.source();
-      setTimeout(() => source.cancel('Operation canceled by the user.'), 100);
-      await axiosClient
-        .get('/', { cancelToken: source.token })
-        .catch((err) => expect(err).toBeDefined());
+      await request(app)
+        .get('/')
+        .timeout(50)
+        .catch((err) => (err.code === 'ECONNABORTED' ? null : Promise.reject(err)));
 
-      return expect(axiosClient.get('/')).resolves.toBeDefined();
+      return request(app).get('/').expect(StatusCodes.OK);
     });
 
     test('it should not wait when client disconnected', async () => {
@@ -233,13 +221,19 @@ describe('Middleware core', () => {
       const promises: Promise<number>[] = [];
       const startedAt = Date.now();
 
-      promises.push(axiosClient.get('/').then(() => Date.now()));
+      promises.push(
+        request(app)
+          .get('/')
+          .then(() => Date.now())
+      );
 
-      const source = axios.CancelToken.source();
-      source.cancel('Operation canceled by the user.');
-      expect(axiosClient.get('/', { cancelToken: source.token })).rejects.toBeDefined();
+      await expect(request(app).get('/').timeout(50)).rejects.toBeDefined();
 
-      promises.push(axiosClient.get('/no').then(() => Date.now()));
+      promises.push(
+        request(app)
+          .get('/no')
+          .then(() => Date.now())
+      );
 
       const [first, second] = await Promise.all(promises);
 
@@ -249,7 +243,7 @@ describe('Middleware core', () => {
     });
 
     test('it should balance the use of the tokens', async () => {
-      scope.get('/').delay(250).reply(200);
+      scope.get('/').delay(10).reply(200);
 
       const tokens = times<string>(5, (n) => `${n}**${FAKE_TOKEN}`)
         .concat(FAKE_TOKEN)
@@ -262,18 +256,22 @@ describe('Middleware core', () => {
         if (token) tokens[token] += 1;
       });
 
-      await Promise.all(times(10, () => axiosClient.get('/')));
+      await Promise.all(times(10, () => request(app).get('/')));
 
       Object.values(tokens).forEach((calls) => expect(calls).toBeGreaterThan(0));
+
+      Object.keys(tokens).forEach((token) => middleware.removeToken(token));
     });
 
     test('it should not forward ratelimit and scope information', async () => {
       scope.get('/').delay(250).reply(200);
 
-      return axiosClient.get('/').then(({ headers }) => {
-        expect(Object.keys(headers).filter((h) => h.indexOf('ratelimit') >= 0)).toHaveLength(0);
-        expect(Object.keys(headers).filter((h) => h.indexOf('scopes') >= 0)).toHaveLength(0);
-      });
+      return request(app)
+        .get('/')
+        .then(({ headers }) => {
+          expect(Object.keys(headers).filter((h) => h.indexOf('ratelimit') >= 0)).toHaveLength(0);
+          expect(Object.keys(headers).filter((h) => h.indexOf('scopes') >= 0)).toHaveLength(0);
+        });
     });
 
     test('it should handle unauthorized requests to API', async () => {
@@ -293,20 +291,20 @@ describe('Middleware core', () => {
         .intercept('/', 'get')
         .reply(200);
 
-      await expect(axiosClient.get('/')).resolves.toBeDefined();
-      await expect(axiosClient.get('/user')).resolves.toBeDefined();
+      await request(app).get('/').expect(200);
+      await request(app).get('/user').expect(200);
 
       middleware.removeToken(FAKE_TOKEN);
       middleware.addToken(repeat('i', 40));
 
-      await expect(axiosClient.get('/user')).rejects.toBeDefined();
-      await expect(axiosClient.get('/')).rejects.toBeDefined();
+      await request(app).get('/user').expect(401);
+      await request(app).get('/').expect(ProxyRouterResponse.NO_REQUESTS);
 
       middleware.removeToken(repeat('i', 40));
       middleware.addToken(repeat('j', 40));
 
-      await expect(axiosClient.get('/user')).rejects.toBeDefined();
-      await expect(axiosClient.get('/')).resolves.toBeDefined();
+      await request(app).get('/user').expect(401);
+      await request(app).get('/').expect(200);
     });
 
     test('it should not update limits when "x-ratelimit-remaining" is not on header', async () => {
@@ -317,8 +315,7 @@ describe('Middleware core', () => {
         .get('/')
         .reply(401);
 
-      await expect(axiosClient.get('/')).rejects.toHaveProperty('response.status', 401);
-      await expect(axiosClient.get('/')).rejects.toHaveProperty('response.status', 401);
+      await request(app).get('/').expect(401);
     });
 
     test('it should allow users to override authorization header', async () => {
@@ -327,10 +324,8 @@ describe('Middleware core', () => {
 
       scope.get('/').matchHeader('authorization', tokenStr).reply(401).get('/').reply(200);
 
-      await expect(
-        axiosClient.get('/', { headers: { authorization: tokenStr } })
-      ).rejects.toHaveProperty('response.status', 401);
-      await expect(axiosClient.get('/')).resolves.toBeDefined();
+      await request(app).get('/').set('Authorization', tokenStr).expect(401);
+      await request(app).get('/').expect(200);
 
       middleware.destroy();
       middleware = new Middleware([FAKE_TOKEN], {
@@ -340,23 +335,22 @@ describe('Middleware core', () => {
         overrideAuthorization: true
       });
 
-      await expect(
-        axiosClient.get('/', { headers: { authorization: tokenStr } })
-      ).resolves.toBeDefined();
+      await request(app).get('/').set('Authorization', tokenStr).expect(200);
     });
 
     test('it should replace base url on response header', async () => {
       const linkStr =
         '<https://api.github.com/repositories/000/tags?page=2>; rel="next", <https://api.github.com/repositories/000/tags?page=10>; rel="last"';
 
-      const expectedLinkStr = linkStr.replace(
-        new RegExp('https://api.github.com', 'g'),
-        `http://${localServerHost}:${proxyServerPort}`
-      );
-
       scope.get('/').reply(200, {}, { link: linkStr });
 
-      await expect(axiosClient.get('/')).resolves.toHaveProperty('headers.link', expectedLinkStr);
+      await request(app)
+        .get('/')
+        .expect(({ headers, request }) => {
+          expect(headers.link).toEqual(
+            linkStr.replace(new RegExp('https://api.github.com/', 'g'), request.url)
+          );
+        });
     });
   });
 });
