@@ -207,16 +207,20 @@ describe('Middleware core', () => {
     test('it should not break proxy when client disconnect', async () => {
       scope.get('/').delay(500).reply(StatusCodes.OK);
 
-      await request(app)
-        .get('/')
-        .timeout(50)
-        .catch((err) => (err.code === 'ECONNABORTED' ? null : Promise.reject(err)));
+      await Promise.all(
+        times(25, () =>
+          request(app)
+            .get('/')
+            .timeout(50)
+            .catch((err) => (err.code === 'ECONNABORTED' ? null : Promise.reject(err)))
+        )
+      );
 
-      return request(app).get('/').expect(StatusCodes.OK);
+      await request(app).get('/').expect(StatusCodes.OK);
     });
 
     test('it should not wait when client disconnected', async () => {
-      scope.get('/').delay(250).reply(200).get('/no').reply(200);
+      scope.get('/').delay(250).reply(StatusCodes.OK).get('/no').reply(StatusCodes.OK);
 
       const promises: Promise<number>[] = [];
       const startedAt = Date.now();
@@ -227,7 +231,7 @@ describe('Middleware core', () => {
           .then(() => Date.now())
       );
 
-      await expect(request(app).get('/').timeout(50)).rejects.toBeDefined();
+      await expect(request(app).get('/').timeout(1)).rejects.toBeDefined();
 
       promises.push(
         request(app)
@@ -243,7 +247,7 @@ describe('Middleware core', () => {
     });
 
     test('it should balance the use of the tokens', async () => {
-      scope.get('/').delay(10).reply(200);
+      scope.get('/').delay(250).reply(200);
 
       const tokens = times<string>(5, (n) => `${n}**${FAKE_TOKEN}`)
         .concat(FAKE_TOKEN)
