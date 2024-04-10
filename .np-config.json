@@ -1,0 +1,7 @@
+{
+  "yarn": true,
+  "tests": true,
+  "publish": false,
+  "message": "chore: v%s",
+  "contents": "dist"
+}

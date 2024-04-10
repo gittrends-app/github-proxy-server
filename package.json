@@ -24,12 +24,6 @@
   "bin": {
     "github-proxy-server": "./dist/cli.js"
   },
-  "np": {
-    "yarn": true,
-    "tests": true,
-    "publish": false,
-    "message": "chore: v%s"
-  },
   "files": [
     "dist",
     "architecture.png"
