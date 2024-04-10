@@ -157,12 +157,13 @@ function createProxyServer(options) {
     function notSupported(req, res) {
         res.status(router_1.ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });
     }
-    app.delete('/*', notSupported);
-    app.patch('/*', notSupported);
-    app.put('/*', notSupported);
     app
         .post('/graphql', (req, reply) => proxyInstances[APIVersion.GraphQL].schedule(req, reply))
         .get('/*', (req, reply) => proxyInstances[APIVersion.REST].schedule(req, reply));
+    app.delete('/*', notSupported);
+    app.patch('/*', notSupported);
+    app.put('/*', notSupported);
+    app.post('/*', notSupported);
     tokens.map((token) => axios_1.default
         .get('https://api.github.com/user', {
         headers: {
