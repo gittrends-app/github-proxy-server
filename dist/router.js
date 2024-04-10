@@ -181,8 +181,8 @@ class ProxyRouter extends stream_1.PassThrough {
     removeToken(token) {
         this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1).forEach((client) => {
             client.proxy.close();
-            client.queue.stop();
-            client.queue.disconnect();
+            client.queue.stop().catch();
+            client.queue.disconnect().catch();
             client.destroy();
         });
     }
