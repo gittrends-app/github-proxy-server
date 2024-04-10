@@ -171,7 +171,7 @@ export function createProxyServer(options: CliOpts): Express {
     )
     .get('/*', (req: Request, reply: Response) =>
       proxyInstances[APIVersion.REST].schedule(req, reply)
-  );
+    );
 
   app.delete('/*', notSupported);
   app.patch('/*', notSupported);
