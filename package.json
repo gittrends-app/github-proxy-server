@@ -19,10 +19,14 @@
     "prettier": "prettier --write --config .prettierrc.yml --ignore-path .prettierignore  '**/*.ts'",
     "version": "node -e 'console.log(process.env.npm_package_version)'",
     "add-version": "echo \"npm_package_version=$(node -e 'console.log(process.env.npm_package_version)')\" > dist/.env.version",
-    "release": "standard-version"
+    "release": "standard-version",
+    "np": "np --no-publish --yarn --contents dist"
   },
   "bin": {
     "github-proxy-server": "./dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",
