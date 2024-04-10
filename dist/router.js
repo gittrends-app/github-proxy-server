@@ -150,7 +150,7 @@ var ProxyRouterResponse;
 (function (ProxyRouterResponse) {
     ProxyRouterResponse[ProxyRouterResponse["PROXY_ERROR"] = 600] = "PROXY_ERROR";
     ProxyRouterResponse[ProxyRouterResponse["NO_REQUESTS"] = 600] = "NO_REQUESTS";
-})(ProxyRouterResponse = exports.ProxyRouterResponse || (exports.ProxyRouterResponse = {}));
+})(ProxyRouterResponse || (exports.ProxyRouterResponse = ProxyRouterResponse = {}));
 class ProxyRouter extends stream_1.PassThrough {
     clients;
     options;

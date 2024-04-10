@@ -55,7 +55,7 @@ var APIVersion;
 (function (APIVersion) {
     APIVersion["GraphQL"] = "graphql";
     APIVersion["REST"] = "rest";
-})(APIVersion = exports.APIVersion || (exports.APIVersion = {}));
+})(APIVersion || (exports.APIVersion = APIVersion = {}));
 class ProxyLogTransform extends stream_1.Transform {
     api;
     started = false;
