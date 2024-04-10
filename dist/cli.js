@@ -29,7 +29,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createProxyServer = exports.readTokensFile = exports.parseTokens = exports.ProxyLogTransform = exports.APIVersion = void 0;
 /* Author: Hudson S. Borges */
-const axios_1 = __importDefault(require("axios"));
 const chalk_1 = __importDefault(require("chalk"));
 const commander_1 = require("commander");
 const consola_1 = __importDefault(require("consola"));
@@ -164,16 +163,14 @@ function createProxyServer(options) {
     app.patch('/*', notSupported);
     app.put('/*', notSupported);
     app.post('/*', notSupported);
-    tokens.map((token) => axios_1.default
-        .get('https://api.github.com/user', {
+    tokens.map((token) => fetch('https://api.github.com/user', {
         headers: {
             authorization: `token ${token}`,
             'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
         }
-    })
-        .catch((error) => {
-        if (error.response?.status !== 401)
-            return;
+    }).then((response) => {
+        if (response.status !== 401)
+            return response;
         Object.values(proxyInstances).forEach((proxy) => proxy.removeToken(token));
         app.emit('warn', `Invalid token detected (${token}).`);
     }));

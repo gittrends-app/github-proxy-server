@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [16.x]
+        node-version: [18.x]
     steps:
       - uses: actions/checkout@v2
       - name: Use Node.js ${{ matrix.node-version }}
@@ -31,16 +31,3 @@ jobs:
         run: yarn
       - name: Build source code
         run: yarn build
-      - name: Create executables
-        if: steps.auto-commit-action.outputs.changes_detected == 'true'
-        run: yarn pkg
-      - name: Use Sync S3 Bucket
-        if: steps.auto-commit-action.outputs.changes_detected == 'true'
-        uses: jakejarvis/s3-sync-action@master
-        with:
-          args: --acl public-read --follow-symlinks --delete
-        env:
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          SOURCE_DIR: 'bin'

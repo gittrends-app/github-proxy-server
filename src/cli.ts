@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 /* Author: Hudson S. Borges */
-import axios from 'axios';
 import chalk from 'chalk';
 import { Option, program } from 'commander';
 import consola from 'consola';
@@ -179,18 +178,16 @@ export function createProxyServer(options: CliOpts): Express {
   app.post('/*', notSupported);
 
   tokens.map((token) =>
-    axios
-      .get('https://api.github.com/user', {
-        headers: {
-          authorization: `token ${token}`,
-          'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
-        }
-      })
-      .catch((error) => {
-        if (error.response?.status !== 401) return;
-        Object.values(proxyInstances).forEach((proxy) => proxy.removeToken(token));
-        app.emit('warn', `Invalid token detected (${token}).`);
-      })
+    fetch('https://api.github.com/user', {
+      headers: {
+        authorization: `token ${token}`,
+        'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
+      }
+    }).then((response) => {
+      if (response.status !== 401) return response;
+      Object.values(proxyInstances).forEach((proxy) => proxy.removeToken(token));
+      app.emit('warn', `Invalid token detected (${token}).`);
+    })
   );
 
   return app;

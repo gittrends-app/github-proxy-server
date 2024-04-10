@@ -26,7 +26,7 @@
 </p>
 <p align="center">Proxy Server Architecture</p>
 
-## Features:
+## Features
 
 - Support to multiple access tokens
 
@@ -42,11 +42,15 @@ You will need to install:
 
 ```bash
 npm install -g gittrends-app/github-proxy-server
-# or
+# or globaly
 yarn global add gittrends-app/github-proxy-server
 ```
 
-Alternatively, you can also download the binary for [Linux](https://github-proxy-server.s3.amazonaws.com/github-proxy-server-linux), [MacOS](https://github-proxy-server.s3.amazonaws.com/github-proxy-server-macos), and [Windows](https://github-proxy-server.s3.amazonaws.com/github-proxy-server-windows).
+You may also run it directly without installing:
+
+```bash
+npx github:gittrends-app/github-proxy-server ....
+```
 
 ## Usage
 
@@ -62,7 +66,7 @@ Or provide a file with several access token (one per line):
 github-proxy-server -p 3000 --tokens <tokens.txt>
 ```
 
-After that, just make the requests to http://localhost:3000 instead of https://api.github.com. For example:
+After that, just make the requests to <http://localhost:3000> instead of <https://api.github.com>. For example:
 
 ```bash
 curl -s http://localhost:3000/users/gittrends-app 2>&1
