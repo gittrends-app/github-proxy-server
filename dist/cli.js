@@ -27,7 +27,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createProxyServer = exports.readTokensFile = exports.parseTokens = exports.ProxyLogTransform = exports.APIVersion = void 0;
+exports.ProxyLogTransform = exports.APIVersion = void 0;
+exports.parseTokens = parseTokens;
+exports.readTokensFile = readTokensFile;
+exports.createProxyServer = createProxyServer;
 /* Author: Hudson S. Borges */
 const chalk_1 = __importDefault(require("chalk"));
 const commander_1 = require("commander");
@@ -109,7 +112,6 @@ function parseTokens(text) {
     }, [])
         .reduce((acc, token) => concatTokens(token, acc), []);
 }
-exports.parseTokens = parseTokens;
 // concat tokens in commander
 function concatTokens(token, list) {
     if (token.length !== 40)
@@ -123,7 +125,6 @@ function readTokensFile(filename) {
         throw new Error(`File "${filename}" not found!`);
     return parseTokens((0, fs_1.readFileSync)(filepath, 'utf8'));
 }
-exports.readTokensFile = readTokensFile;
 function createProxyServer(options) {
     const tokens = (0, lodash_1.compact)(options.tokens).reduce((memo, token) => concatTokens(token, memo), []);
     const app = (0, express_1.default)();
@@ -176,7 +177,6 @@ function createProxyServer(options) {
     }));
     return app;
 }
-exports.createProxyServer = createProxyServer;
 // parse arguments from command line
 if (require.main === module) {
     commander_1.program
