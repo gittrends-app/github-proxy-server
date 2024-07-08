@@ -249,14 +249,14 @@ describe('Middleware core', () => {
     test('it should balance the use of the tokens', async () => {
       scope.get('/').delay(250).reply(200);
 
-      const tokens = times<string>(5, (n) => `${n}**${FAKE_TOKEN}`)
+      const tokens = times<string>(5, (n) => `${FAKE_TOKEN}**${n}`)
         .concat(FAKE_TOKEN)
         .reduce((memo: Record<string, number>, token) => ({ ...memo, [token]: 0 }), {});
 
       Object.keys(tokens).forEach((token) => middleware.addToken(token));
 
       middleware.on('data', (data) => {
-        const token = Object.keys(tokens).find((token) => token.startsWith(data.token));
+        const token = Object.keys(tokens).find((token) => token.endsWith(data.token));
         if (token) tokens[token] += 1;
       });
 

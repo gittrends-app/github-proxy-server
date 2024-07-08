@@ -166,7 +166,7 @@ class ProxyWorker extends Readable {
 
   log(status?: number, startedAt?: Date): void {
     this.push({
-      token: this.token.substring(0, 4),
+      token: this.token.slice(-4),
       pending: this.queued,
       remaining: this.remaining,
       reset: this.reset,
