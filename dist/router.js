@@ -122,7 +122,7 @@ class ProxyWorker extends stream_1.Readable {
     }
     log(status, startedAt) {
         this.push({
-            token: this.token.substring(0, 4),
+            token: this.token.slice(-4),
             pending: this.queued,
             remaining: this.remaining,
             reset: this.reset,
