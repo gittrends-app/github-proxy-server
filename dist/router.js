@@ -1,5 +1,4 @@
 "use strict";
-/* eslint-disable @typescript-eslint/no-duplicate-enum-values */
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -150,7 +149,6 @@ class ProxyWorker extends stream_1.Readable {
 var ProxyRouterResponse;
 (function (ProxyRouterResponse) {
     ProxyRouterResponse[ProxyRouterResponse["PROXY_ERROR"] = 600] = "PROXY_ERROR";
-    ProxyRouterResponse[ProxyRouterResponse["NO_REQUESTS"] = 600] = "NO_REQUESTS";
 })(ProxyRouterResponse || (exports.ProxyRouterResponse = ProxyRouterResponse = {}));
 class ProxyRouter extends stream_1.PassThrough {
     clients;
