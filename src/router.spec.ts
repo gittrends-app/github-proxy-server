@@ -11,10 +11,6 @@ let app: Express;
 
 const FAKE_TOKEN = repeat('t', 40);
 
-async function waitPromise(milisseconds: number): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, milisseconds));
-}
-
 describe('Middleware constructor and methods', () => {
   test('it should throw an error if no token is provided', () => {
     expect(() => new Middleware([])).toThrowError();
@@ -102,7 +98,7 @@ describe('Middleware core', () => {
         });
     });
 
-    test(`it should respond with ${ProxyRouterResponse.NO_REQUESTS} if no requests available`, async () => {
+    test(`it should wait if no requests available`, async () => {
       const waitInterval = 500;
 
       scope
@@ -117,12 +113,7 @@ describe('Middleware core', () => {
 
       await request(app).get('/reset').expect(StatusCodes.OK);
 
-      await request(app).get('/reset').expect(ProxyRouterResponse.NO_REQUESTS);
-
-      await waitPromise(waitInterval);
-
-      middleware.removeToken(FAKE_TOKEN);
-      await request(app).get('/').expect(ProxyRouterResponse.NO_REQUESTS);
+      await request(app).get('/reset').expect(StatusCodes.OK);
     });
 
     test('it should restore rate limite on reset time', async () => {
@@ -140,11 +131,10 @@ describe('Middleware core', () => {
 
       for (let i = 0; i < 2; i++) {
         await request(app).get('/reset').expect(StatusCodes.OK);
-        await Promise.all([
-          request(app).get('/reset').expect(ProxyRouterResponse.NO_REQUESTS),
-          waitPromise(waitInterval)
-        ]);
-        await request(app).get('/').expect(StatusCodes.OK);
+
+        const startedAt = Date.now();
+        await request(app).get('/reset').expect(StatusCodes.OK);
+        expect(Date.now() - startedAt).toBeGreaterThanOrEqual(waitInterval);
       }
     });
 
@@ -302,7 +292,6 @@ describe('Middleware core', () => {
       middleware.addToken(repeat('i', 40));
 
       await request(app).get('/user').expect(401);
-      await request(app).get('/').expect(ProxyRouterResponse.NO_REQUESTS);
 
       middleware.removeToken(repeat('i', 40));
       middleware.addToken(repeat('j', 40));

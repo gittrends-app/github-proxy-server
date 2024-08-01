@@ -1,11 +1,9 @@
-/* eslint-disable @typescript-eslint/no-duplicate-enum-values */
-
 /* Author: Hudson S. Borges */
 import Bottleneck from 'bottleneck';
 import { Request, Response } from 'express';
 import { ClientRequest, IncomingMessage } from 'http';
 import Server, { createProxyServer } from 'http-proxy';
-import { min, shuffle } from 'lodash';
+import { shuffle } from 'lodash';
 import { PassThrough, Readable } from 'stream';
 
 type ProxyWorkerOpts = {
@@ -199,8 +197,7 @@ class ProxyWorker extends Readable {
 export type ProxyRouterOpts = ProxyWorkerOpts & { minRemaining: number };
 
 export enum ProxyRouterResponse {
-  PROXY_ERROR = 600,
-  NO_REQUESTS = 600
+  PROXY_ERROR = 600
 }
 
 export default class ProxyRouter extends PassThrough {
@@ -220,21 +217,18 @@ export default class ProxyRouter extends PassThrough {
 
   // function to select the best client and queue request
   async schedule(req: Request, res: Response): Promise<void> {
-    const client = shuffle(this.clients).reduce(
-      (selected: ProxyWorker | null, client) =>
-        !selected ||
-        (client.actualRemaining > this.options.minRemaining && client.pending < selected.pending)
-          ? client
-          : selected,
-      null
-    );
+    let client: ProxyWorker | null = null;
 
-    if (!client || client.remaining <= this.options.minRemaining) {
-      res.status(ProxyRouterResponse.NO_REQUESTS).json({
-        message: 'Proxy Server: no requests available',
-        reset: min(this.clients.map((client) => client.reset))
-      });
-      return;
+    while (true) {
+      client = shuffle(this.clients).reduce((selected: ProxyWorker | null, client) => {
+        if (client.actualRemaining <= this.options.minRemaining) return selected;
+        return !selected || client.pending < selected.pending ? client : selected;
+      }, null);
+
+      if (client) break;
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+      if (req.closed) return;
     }
 
     return client.schedule(req, res);

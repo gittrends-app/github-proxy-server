@@ -165,16 +165,18 @@ class ProxyRouter extends stream_1.PassThrough {
     }
     // function to select the best client and queue request
     async schedule(req, res) {
-        const client = (0, lodash_1.shuffle)(this.clients).reduce((selected, client) => !selected ||
-            (client.actualRemaining > this.options.minRemaining && client.pending < selected.pending)
-            ? client
-            : selected, null);
-        if (!client || client.remaining <= this.options.minRemaining) {
-            res.status(ProxyRouterResponse.NO_REQUESTS).json({
-                message: 'Proxy Server: no requests available',
-                reset: (0, lodash_1.min)(this.clients.map((client) => client.reset))
-            });
-            return;
+        let client = null;
+        while (true) {
+            client = (0, lodash_1.shuffle)(this.clients).reduce((selected, client) => {
+                if (client.actualRemaining <= this.options.minRemaining)
+                    return selected;
+                return !selected || client.pending < selected.pending ? client : selected;
+            }, null);
+            if (client)
+                break;
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            if (req.closed)
+                return;
         }
         return client.schedule(req, res);
     }
