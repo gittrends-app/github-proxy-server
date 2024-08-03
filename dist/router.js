@@ -90,11 +90,12 @@ class ProxyWorker extends stream_1.Readable {
                 req.socket.on('close', resolve);
                 this.proxy.web(req, res, undefined, (error) => reject(error));
             })
-                .catch(async (error) => {
+                .catch(async () => {
                 this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
                 if (!req.socket.destroyed && !req.socket.writableFinished)
-                    res.status(ProxyRouterResponse.PROXY_ERROR).send(error);
+                    res.sendStatus(502);
                 req.proxyRequest?.destroy();
+                res.destroy();
             })
                 .finally(() => new Promise((resolve) => setTimeout(resolve, opts.requestInterval)));
         });
