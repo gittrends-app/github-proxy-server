@@ -2,8 +2,9 @@
 import Bottleneck from 'bottleneck';
 import { Request, Response } from 'express';
 import { ClientRequest, IncomingMessage } from 'http';
-import Server, { createProxyServer } from 'http-proxy';
-import { shuffle } from 'lodash';
+import Server, { default as proxy } from 'http-proxy';
+import { StatusCodes } from 'http-status-codes';
+import shuffle from 'lodash/shuffle.js';
 import { PassThrough, Readable } from 'stream';
 
 type ProxyWorkerOpts = {
@@ -55,7 +56,7 @@ class ProxyWorker extends Readable {
     this.remaining = 5000;
     this.reset = (Date.now() + 1000 * 60 * 60) / 1000;
 
-    this.proxy = createProxyServer({
+    this.proxy = proxy.createProxyServer({
       target: 'https://api.github.com',
       proxyTimeout: opts.requestTimeout,
       ws: false,
@@ -136,7 +137,9 @@ class ProxyWorker extends Readable {
         .catch(async () => {
           this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
 
-          if (!req.socket.destroyed && !req.socket.writableFinished) res.sendStatus(502);
+          if (!req.socket.destroyed && !req.socket.writableFinished) {
+            res.sendStatus(StatusCodes.BAD_GATEWAY);
+          }
 
           req.proxyRequest?.destroy();
           res.destroy();

@@ -1,11 +1,13 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from '@jest/globals';
 import express, { Express } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { range, repeat, times } from 'lodash';
+import range from 'lodash/range.js';
+import repeat from 'lodash/repeat.js';
+import times from 'lodash/times.js';
 import nock from 'nock';
 import request from 'supertest';
 
-import Middleware, { ProxyRouterResponse } from './router';
+import Middleware from './router';
 
 let app: Express;
 
@@ -77,8 +79,8 @@ describe('Middleware core', () => {
       });
     });
 
-    test(`it should respond with Proxy Server Error (${ProxyRouterResponse.PROXY_ERROR})`, async () => {
-      await request(app).get('/').expect(ProxyRouterResponse.PROXY_ERROR);
+    test(`it should respond with Bad Gateway (${StatusCodes.BAD_GATEWAY})`, async () => {
+      await request(app).get('/').expect(StatusCodes.BAD_GATEWAY);
     });
   });
 
@@ -185,13 +187,13 @@ describe('Middleware core', () => {
         .delay(requestTimeout * 2)
         .reply(StatusCodes.OK);
 
-      return request(app).get('/').expect(ProxyRouterResponse.PROXY_ERROR);
+      return request(app).get('/').expect(StatusCodes.BAD_GATEWAY);
     });
 
     test('it should respond to broken connections', async () => {
       scope.get('/').delay(100).replyWithError(new Error('Server Error'));
 
-      return request(app).get('/').expect(ProxyRouterResponse.PROXY_ERROR);
+      return request(app).get('/').expect(StatusCodes.BAD_GATEWAY);
     });
 
     test('it should not break proxy when client disconnect', async () => {

@@ -2,11 +2,13 @@ import { beforeAll, beforeEach, describe, expect, test } from '@jest/globals';
 import { exec } from 'child_process';
 import { writeFileSync } from 'fs';
 import { StatusCodes } from 'http-status-codes';
-import { repeat, times } from 'lodash';
+import repeat from 'lodash/repeat.js';
+import times from 'lodash/times.js';
 import nock from 'nock';
 import request from 'supertest';
 import { withFile } from 'tmp-promise';
 
+import { ProxyRouterResponse } from './router.js';
 import {
   APIVersion,
   CliOpts,
@@ -14,8 +16,7 @@ import {
   createProxyServer,
   parseTokens,
   readTokensFile
-} from './cli';
-import { ProxyRouterResponse } from './router';
+} from './server.js';
 
 type CliCmdResult = {
   code: number;

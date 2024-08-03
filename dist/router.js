@@ -1,15 +1,10 @@
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.ProxyRouterResponse = void 0;
 /* Author: Hudson S. Borges */
-const bottleneck_1 = __importDefault(require("bottleneck"));
-const http_proxy_1 = require("http-proxy");
-const lodash_1 = require("lodash");
-const stream_1 = require("stream");
-class ProxyWorker extends stream_1.Readable {
+import Bottleneck from 'bottleneck';
+import { default as proxy } from 'http-proxy';
+import { StatusCodes } from 'http-status-codes';
+import shuffle from 'lodash/shuffle.js';
+import { PassThrough, Readable } from 'stream';
+class ProxyWorker extends Readable {
     queue;
     proxy;
     token;
@@ -23,7 +18,7 @@ class ProxyWorker extends stream_1.Readable {
         this.token = token;
         this.remaining = 5000;
         this.reset = (Date.now() + 1000 * 60 * 60) / 1000;
-        this.proxy = (0, http_proxy_1.createProxyServer)({
+        this.proxy = proxy.createProxyServer({
             target: 'https://api.github.com',
             proxyTimeout: opts.requestTimeout,
             ws: false,
@@ -66,7 +61,7 @@ class ProxyWorker extends stream_1.Readable {
             })
                 .join(', ');
         });
-        this.queue = new bottleneck_1.default({
+        this.queue = new Bottleneck({
             maxConcurrent: 1,
             minTime: 0,
             id: `proxy_server:${this.token}`,
@@ -92,8 +87,9 @@ class ProxyWorker extends stream_1.Readable {
             })
                 .catch(async () => {
                 this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
-                if (!req.socket.destroyed && !req.socket.writableFinished)
-                    res.sendStatus(502);
+                if (!req.socket.destroyed && !req.socket.writableFinished) {
+                    res.sendStatus(StatusCodes.BAD_GATEWAY);
+                }
                 req.proxyRequest?.destroy();
                 res.destroy();
             })
@@ -147,11 +143,11 @@ class ProxyWorker extends stream_1.Readable {
         return this;
     }
 }
-var ProxyRouterResponse;
+export var ProxyRouterResponse;
 (function (ProxyRouterResponse) {
     ProxyRouterResponse[ProxyRouterResponse["PROXY_ERROR"] = 600] = "PROXY_ERROR";
-})(ProxyRouterResponse || (exports.ProxyRouterResponse = ProxyRouterResponse = {}));
-class ProxyRouter extends stream_1.PassThrough {
+})(ProxyRouterResponse || (ProxyRouterResponse = {}));
+export default class ProxyRouter extends PassThrough {
     clients;
     options;
     constructor(tokens, opts) {
@@ -166,7 +162,7 @@ class ProxyRouter extends stream_1.PassThrough {
     async schedule(req, res) {
         let client = null;
         while (true) {
-            client = (0, lodash_1.shuffle)(this.clients).reduce((selected, client) => {
+            client = shuffle(this.clients).reduce((selected, client) => {
                 if (client.actualRemaining <= this.options.minRemaining)
                     return selected;
                 return !selected || client.pending < selected.pending ? client : selected;
@@ -203,4 +199,3 @@ class ProxyRouter extends stream_1.PassThrough {
         return this;
     }
 }
-exports.default = ProxyRouter;
