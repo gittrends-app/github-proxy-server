@@ -12,7 +12,7 @@ import omit from 'lodash/omit.js';
 import omitBy from 'lodash/omitBy.js';
 import { pathToFileURL } from 'url';
 
-import { version } from '../package.json';
+import packageJson from '../package.json' with { type: "json" };
 import { CliOpts, concatTokens, createProxyServer, readTokensFile } from './server.js';
 
 // parse arguments from command line
@@ -85,7 +85,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       )
     )
     .addOption(new Option('--no-status-monitor', 'Disable requests monitoring on /status'))
-    .version(version || '?', '-v, --version', 'output the current version')
+    .version(packageJson.version || '?', '-v, --version', 'output the current version')
     .parse();
 
   const options = program.opts();
