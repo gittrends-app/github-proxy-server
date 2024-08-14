@@ -2,22 +2,34 @@
 import Bottleneck from 'bottleneck';
 import { default as proxy } from 'http-proxy';
 import { StatusCodes } from 'http-status-codes';
-import shuffle from 'lodash/shuffle.js';
+import minBy from 'lodash/minBy.js';
+import { setTimeout as asyncSetTimeout } from 'node:timers/promises';
 import { PassThrough, Readable } from 'stream';
 class ProxyWorker extends Readable {
     queue;
     proxy;
     token;
     schedule;
-    limit = 5000;
+    defaults;
     remaining;
     reset;
     resetTimeout;
     constructor(token, opts) {
         super({ objectMode: true, read: () => null });
         this.token = token;
-        this.remaining = 5000;
-        this.reset = (Date.now() + 1000 * 60 * 60) / 1000;
+        switch (opts.resource) {
+            case 'code_search':
+                this.defaults = { resource: opts.resource, limit: 10, reset: 1000 * 60 };
+                break;
+            case 'search':
+                this.defaults = { resource: opts.resource, limit: 30, reset: 1000 * 60 };
+                break;
+            case 'graphql':
+            default:
+                this.defaults = { resource: opts.resource, limit: 5000, reset: 1000 * 60 * 60 };
+        }
+        this.remaining = this.defaults.limit;
+        this.reset = (Date.now() + this.defaults.reset) / 1000;
         this.proxy = proxy.createProxyServer({
             target: 'https://api.github.com',
             proxyTimeout: opts.requestTimeout,
@@ -64,7 +76,7 @@ class ProxyWorker extends Readable {
         this.queue = new Bottleneck({
             maxConcurrent: 1,
             minTime: 0,
-            id: `proxy_server:${this.token}`,
+            id: `proxy_server:${opts.resource}:${this.token}`,
             ...(opts?.clustering
                 ? {
                     datastore: 'ioredis',
@@ -81,7 +93,11 @@ class ProxyWorker extends Readable {
         this.schedule = this.queue.wrap(async (req, res) => {
             if (req.socket.destroyed)
                 return this.log();
+            if (this.remaining <= opts.minRemaining) {
+                await asyncSetTimeout(Math.max(0, this.reset * 1000 - Date.now()) + 1000);
+            }
             await new Promise((resolve, reject) => {
+                this.remaining--;
                 req.socket.on('close', resolve);
                 this.proxy.web(req, res, undefined, (error) => reject(error));
             })
@@ -93,7 +109,7 @@ class ProxyWorker extends Readable {
                 req.proxyRequest?.destroy();
                 res.destroy();
             })
-                .finally(() => new Promise((resolve) => setTimeout(resolve, opts.requestInterval)));
+                .then(() => asyncSetTimeout(opts.requestInterval));
         });
         this.on('close', () => this.resetTimeout && clearTimeout(this.resetTimeout));
     }
@@ -108,16 +124,16 @@ class ProxyWorker extends Readable {
         }
         else {
             this.remaining = parseInt(headers['x-ratelimit-remaining'], 10);
-            this.limit = parseInt(headers['x-ratelimit-limit'], 10);
             this.reset = parseInt(headers['x-ratelimit-reset'], 10);
             if (this.resetTimeout)
                 clearTimeout(this.resetTimeout);
-            const resetIn = Math.max(50, this.reset * 1000 - Date.now());
-            this.resetTimeout = setTimeout(() => (this.remaining = 5000), resetIn);
+            const resetIn = Math.max(0, this.reset * 1000 - Date.now()) + 100;
+            this.resetTimeout = setTimeout(() => (this.remaining = this.defaults.limit), resetIn);
         }
     }
     log(status, startedAt) {
         this.push({
+            resource: this.defaults.resource,
             token: this.token.slice(-4),
             pending: this.queued,
             remaining: this.remaining,
@@ -160,35 +176,41 @@ export default class ProxyRouter extends PassThrough {
     }
     // function to select the best client and queue request
     async schedule(req, res) {
-        let client = null;
-        while (true) {
-            client = shuffle(this.clients).reduce((selected, client) => {
-                if (client.actualRemaining <= this.options.minRemaining)
-                    return selected;
-                return !selected || client.pending < selected.pending ? client : selected;
-            }, null);
-            if (client)
-                break;
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            if (req.closed)
-                return;
-        }
-        return client.schedule(req, res);
+        const isGraphQL = req.path.startsWith('/graphql') && req.method === 'POST';
+        const isCodeSearch = req.path.startsWith('/search/code');
+        const isSearch = req.path.startsWith('/search');
+        let clients;
+        if (isGraphQL)
+            clients = this.clients.map((client) => client.graphql);
+        else if (isCodeSearch)
+            clients = this.clients.map((client) => client.code_search);
+        else if (isSearch)
+            clients = this.clients.map((client) => client.search);
+        else
+            clients = this.clients.map((client) => client.core);
+        return minBy(clients, (client) => client.pending + 1 / client.remaining).schedule(req, res);
     }
     removeToken(token) {
         this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1).forEach((client) => {
-            client.proxy.close();
-            client.queue.stop({ dropWaitingJobs: false });
-            client.queue.disconnect();
-            client.destroy();
+            for (const worker of [client.core, client.search, client.code_search, client.graphql]) {
+                worker.proxy.close();
+                worker.queue.stop({ dropWaitingJobs: false });
+                worker.queue.disconnect();
+                worker.destroy();
+            }
         });
     }
     addToken(token) {
         if (this.clients.map((client) => client.token).includes(token))
             return;
-        const client = new ProxyWorker(token, this.options);
-        client.pipe(this, { end: false });
-        this.clients.push(client);
+        const core = new ProxyWorker(token, { ...this.options, resource: 'core' });
+        const search = new ProxyWorker(token, { ...this.options, resource: 'search' });
+        const codeSearch = new ProxyWorker(token, { ...this.options, resource: 'code_search' });
+        const graphql = new ProxyWorker(token, { ...this.options, resource: 'graphql' });
+        for (const worker of [core, search, codeSearch, graphql]) {
+            worker.pipe(this, { end: false });
+        }
+        this.clients.push({ token, core, search, code_search: codeSearch, graphql });
     }
     get tokens() {
         return this.clients.map((client) => client.token);

@@ -20,22 +20,17 @@ import ProxyRouter, { ProxyRouterOpts, ProxyRouterResponse, WorkerLogger } from 
 
 dayjs.extend(relativeTime);
 
-export enum APIVersion {
-  GraphQL = 'graphql',
-  REST = 'rest'
-}
-
 export class ProxyLogTransform extends Transform {
   private started = false;
   private config?: TableUserConfig;
 
-  constructor(private api: APIVersion) {
+  constructor() {
     super({ objectMode: true });
 
     this.config = {
       columnDefault: { alignment: 'right', width: 5 },
       columns: {
-        0: { width: 7 },
+        0: { width: 11 },
         1: { width: 5 },
         2: { width: 3 },
         3: { width: 5 },
@@ -48,12 +43,9 @@ export class ProxyLogTransform extends Transform {
     };
   }
 
-  _transform(
-    chunk: WorkerLogger & { api: string },
-    encoding: string,
-    done: (error?: Error) => void
-  ): void {
+  _transform(chunk: WorkerLogger, encoding: string, done: (error?: Error) => void): void {
     const data = {
+      resource: chunk.resource,
       token: chunk.token,
       pending: chunk.pending,
       remaining: chunk.remaining,
@@ -66,12 +58,14 @@ export class ProxyLogTransform extends Transform {
       this.started = true;
       this.push(
         chalk.bold('Columns: ') +
-          ['api', ...Object.keys(data)].map((v) => chalk.underline(v)).join(', ') +
+          Object.keys(data)
+            .map((v) => chalk.underline(v))
+            .join(', ') +
           '\n\n'
       );
     }
 
-    this.push(table([[this.api, ...Object.values(data)]], this.config).trimEnd() + '\n');
+    this.push(table([Object.values(data)], this.config).trimEnd() + '\n');
 
     done();
   }
@@ -140,32 +134,21 @@ export function createProxyServer(options: CliOpts): Express {
     );
   }
 
-  const proxyInstances: { [key: string]: ProxyRouter } = Object.values(APIVersion).reduce(
-    (memo, version) => {
-      const proxy = new ProxyRouter(tokens, {
-        overrideAuthorization: options.overrideAuthorization ?? true,
-        ...options
-      });
+  const proxy = new ProxyRouter(tokens, {
+    overrideAuthorization: options.overrideAuthorization ?? true,
+    ...options
+  });
 
-      if (!options.silent)
-        proxy.pipe(new ProxyLogTransform(version).on('data', (data) => app.emit('log', data)));
-
-      return { ...memo, [version]: proxy };
-    },
-    {}
-  );
+  if (!options.silent)
+    proxy.pipe(new ProxyLogTransform().on('data', (data) => app.emit('log', data)));
 
   function notSupported(req: Request, res: Response) {
     res.status(ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });
   }
 
   app
-    .post('/graphql', (req: Request, reply: Response) =>
-      proxyInstances[APIVersion.GraphQL].schedule(req, reply)
-    )
-    .get('/*', (req: Request, reply: Response) =>
-      proxyInstances[APIVersion.REST].schedule(req, reply)
-    );
+    .post('/graphql', (req: Request, reply: Response) => proxy.schedule(req, reply))
+    .get('/*', (req: Request, reply: Response) => proxy.schedule(req, reply));
 
   app.delete('/*', notSupported);
   app.patch('/*', notSupported);
@@ -180,7 +163,7 @@ export function createProxyServer(options: CliOpts): Express {
       }
     }).then((response) => {
       if (response.status !== 401) return response;
-      Object.values(proxyInstances).forEach((proxy) => proxy.removeToken(token));
+      proxy.removeToken(token);
       app.emit('warn', `Invalid token detected (${token}).`);
     })
   );

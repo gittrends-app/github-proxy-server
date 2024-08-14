@@ -3,6 +3,7 @@ import { PassThrough } from 'stream';
 type ProxyWorkerOpts = {
     requestTimeout: number;
     requestInterval: number;
+    minRemaining: number;
     overrideAuthorization?: boolean;
     clustering?: {
         host: string;
@@ -10,7 +11,9 @@ type ProxyWorkerOpts = {
         db: number;
     };
 };
+type APIResources = 'core' | 'search' | 'code_search' | 'graphql';
 export interface WorkerLogger {
+    resource: APIResources;
     token: string;
     pending: number;
     remaining: number;

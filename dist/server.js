@@ -16,22 +16,15 @@ import swaggerStats from 'swagger-stats';
 import { getBorderCharacters, table } from 'table';
 import ProxyRouter, { ProxyRouterResponse } from './router.js';
 dayjs.extend(relativeTime);
-export var APIVersion;
-(function (APIVersion) {
-    APIVersion["GraphQL"] = "graphql";
-    APIVersion["REST"] = "rest";
-})(APIVersion || (APIVersion = {}));
 export class ProxyLogTransform extends Transform {
-    api;
     started = false;
     config;
-    constructor(api) {
+    constructor() {
         super({ objectMode: true });
-        this.api = api;
         this.config = {
             columnDefault: { alignment: 'right', width: 5 },
             columns: {
-                0: { width: 7 },
+                0: { width: 11 },
                 1: { width: 5 },
                 2: { width: 3 },
                 3: { width: 5 },
@@ -45,6 +38,7 @@ export class ProxyLogTransform extends Transform {
     }
     _transform(chunk, encoding, done) {
         const data = {
+            resource: chunk.resource,
             token: chunk.token,
             pending: chunk.pending,
             remaining: chunk.remaining,
@@ -55,10 +49,12 @@ export class ProxyLogTransform extends Transform {
         if (!this.started) {
             this.started = true;
             this.push(chalk.bold('Columns: ') +
-                ['api', ...Object.keys(data)].map((v) => chalk.underline(v)).join(', ') +
+                Object.keys(data)
+                    .map((v) => chalk.underline(v))
+                    .join(', ') +
                 '\n\n');
         }
-        this.push(table([[this.api, ...Object.values(data)]], this.config).trimEnd() + '\n');
+        this.push(table([Object.values(data)], this.config).trimEnd() + '\n');
         done();
     }
 }
@@ -107,21 +103,18 @@ export function createProxyServer(options) {
             uriPath: '/status'
         }));
     }
-    const proxyInstances = Object.values(APIVersion).reduce((memo, version) => {
-        const proxy = new ProxyRouter(tokens, {
-            overrideAuthorization: options.overrideAuthorization ?? true,
-            ...options
-        });
-        if (!options.silent)
-            proxy.pipe(new ProxyLogTransform(version).on('data', (data) => app.emit('log', data)));
-        return { ...memo, [version]: proxy };
-    }, {});
+    const proxy = new ProxyRouter(tokens, {
+        overrideAuthorization: options.overrideAuthorization ?? true,
+        ...options
+    });
+    if (!options.silent)
+        proxy.pipe(new ProxyLogTransform().on('data', (data) => app.emit('log', data)));
     function notSupported(req, res) {
         res.status(ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });
     }
     app
-        .post('/graphql', (req, reply) => proxyInstances[APIVersion.GraphQL].schedule(req, reply))
-        .get('/*', (req, reply) => proxyInstances[APIVersion.REST].schedule(req, reply));
+        .post('/graphql', (req, reply) => proxy.schedule(req, reply))
+        .get('/*', (req, reply) => proxy.schedule(req, reply));
     app.delete('/*', notSupported);
     app.patch('/*', notSupported);
     app.put('/*', notSupported);
@@ -134,7 +127,7 @@ export function createProxyServer(options) {
     }).then((response) => {
         if (response.status !== 401)
             return response;
-        Object.values(proxyInstances).forEach((proxy) => proxy.removeToken(token));
+        proxy.removeToken(token);
         app.emit('warn', `Invalid token detected (${token}).`);
     }));
     return app;

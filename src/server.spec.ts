@@ -10,7 +10,6 @@ import { withFile } from 'tmp-promise';
 
 import { ProxyRouterResponse } from './router.js';
 import {
-  APIVersion,
   CliOpts,
   ProxyLogTransform,
   createProxyServer,
@@ -88,7 +87,7 @@ describe('Test cli utils', () => {
     };
 
     test('it should push a header in the first request', async () => {
-      const logger = new ProxyLogTransform(APIVersion.REST);
+      const logger = new ProxyLogTransform();
 
       const chunks: string[] = [];
       logger.on('data', (chunk: string) => chunks.push(chunk));

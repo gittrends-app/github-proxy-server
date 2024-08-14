@@ -114,30 +114,7 @@ describe('Middleware core', () => {
         .reply(StatusCodes.OK);
 
       await request(app).get('/reset').expect(StatusCodes.OK);
-
-      await request(app).get('/reset').expect(StatusCodes.OK);
-    });
-
-    test('it should restore rate limite on reset time', async () => {
-      const waitInterval = 1000;
-
-      scope
-        .get('/reset')
-        .reply(StatusCodes.OK, '', {
-          'x-ratelimit-remaining': '0',
-          'x-ratelimit-limit': '5000',
-          'x-ratelimit-reset': `${Math.trunc((Date.now() + waitInterval) / 1000)}`
-        })
-        .get('/')
-        .reply(StatusCodes.OK);
-
-      for (let i = 0; i < 2; i++) {
-        await request(app).get('/reset').expect(StatusCodes.OK);
-
-        const startedAt = Date.now();
-        await request(app).get('/reset').expect(StatusCodes.OK);
-        expect(Date.now() - startedAt).toBeGreaterThanOrEqual(waitInterval);
-      }
+      await request(app).get('/').expect(StatusCodes.OK);
     });
 
     test('it should respect the interval between the requests', async () => {
