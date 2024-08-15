@@ -57,8 +57,7 @@ class ProxyWorker extends Readable {
   };
 
   remaining: number;
-  reset: number;
-  resetTimeout?: ReturnType<typeof setTimeout>;
+  reset: number = Date.now() / 1000;
 
   constructor(token: string, opts: ProxyWorkerOpts & { resource: APIResources }) {
     super({ objectMode: true, read: () => null });
@@ -78,14 +77,15 @@ class ProxyWorker extends Readable {
     }
 
     this.remaining = this.defaults.limit;
-    this.reset = (Date.now() + this.defaults.reset) / 1000;
 
     this.proxy = proxy.createProxyServer({
       target: 'https://api.github.com',
-      proxyTimeout: opts.requestTimeout,
       ws: false,
       xfwd: true,
-      changeOrigin: true
+      changeOrigin: true,
+      autoRewrite: true,
+      timeout: opts.requestTimeout,
+      proxyTimeout: opts.requestTimeout
     });
 
     this.proxy.on('proxyReq', (proxyReq, req: ExtendedIncomingMessage) => {
@@ -93,7 +93,7 @@ class ProxyWorker extends Readable {
       req.startedAt = new Date();
       req.hasAuthorization = opts.overrideAuthorization
         ? false
-        : proxyReq.hasHeader('authorization');
+        : !!proxyReq.getHeader('authorization');
 
       if (!req.hasAuthorization) proxyReq.setHeader('authorization', `token ${token}`);
     });
@@ -154,15 +154,17 @@ class ProxyWorker extends Readable {
     this.schedule = this.queue.wrap(async (req: ExtendedRequest, res: Response): Promise<void> => {
       if (req.socket.destroyed) return this.log();
 
-      if (this.remaining <= opts.minRemaining) {
-        await asyncSetTimeout(Math.max(0, this.reset * 1000 - Date.now()) + 1000);
+      if (this.remaining <= opts.minRemaining && this.reset && this.reset * 1000 > Date.now()) {
+        await asyncSetTimeout(Math.max(0, this.reset * 1000 - Date.now()) + 1500);
       }
 
       await new Promise((resolve, reject) => {
         this.remaining--;
         req.socket.on('close', resolve);
+        req.socket.on('error', reject);
         this.proxy.web(req, res as never, undefined, (error) => reject(error));
       })
+        .then(() => asyncSetTimeout(opts.requestInterval))
         .catch(async () => {
           this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
 
@@ -172,11 +174,8 @@ class ProxyWorker extends Readable {
 
           req.proxyRequest?.destroy();
           res.destroy();
-        })
-        .then(() => asyncSetTimeout(opts.requestInterval));
+        });
     });
-
-    this.on('close', () => this.resetTimeout && clearTimeout(this.resetTimeout));
   }
 
   updateLimits(headers: Record<string, string>): void {
@@ -187,9 +186,6 @@ class ProxyWorker extends Readable {
     } else {
       this.remaining = parseInt(headers['x-ratelimit-remaining'], 10);
       this.reset = parseInt(headers['x-ratelimit-reset'], 10);
-      if (this.resetTimeout) clearTimeout(this.resetTimeout);
-      const resetIn = Math.max(0, this.reset * 1000 - Date.now()) + 100;
-      this.resetTimeout = setTimeout(() => (this.remaining = this.defaults.limit), resetIn);
     }
   }
 
@@ -268,7 +264,7 @@ export default class ProxyRouter extends PassThrough {
     else clients = this.clients.map((client) => client.core);
 
     return (
-      minBy(clients, (client) => client.queued + 1 / client.remaining) as ProxyWorker
+      minBy(clients, (client) => client.pending + 1 / client.remaining) as ProxyWorker
     ).schedule(req, res);
   }
 
