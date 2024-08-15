@@ -188,7 +188,7 @@ export default class ProxyRouter extends PassThrough {
             clients = this.clients.map((client) => client.search);
         else
             clients = this.clients.map((client) => client.core);
-        return minBy(clients, (client) => client.pending + 1 / client.remaining).schedule(req, res);
+        return minBy(clients, (client) => client.queued + 1 / client.remaining).schedule(req, res);
     }
     removeToken(token) {
         this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1).forEach((client) => {
