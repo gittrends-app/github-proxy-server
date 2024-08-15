@@ -30,12 +30,12 @@ class ProxyWorker extends Readable {
         this.remaining = this.defaults.limit;
         this.proxy = proxy.createProxyServer({
             target: 'https://api.github.com',
-            proxyTimeout: opts.requestTimeout,
             ws: false,
             xfwd: true,
             changeOrigin: true,
             autoRewrite: true,
-            timeout: opts.requestTimeout
+            timeout: opts.requestTimeout,
+            proxyTimeout: opts.requestTimeout
         });
         this.proxy.on('proxyReq', (proxyReq, req) => {
             req.proxyRequest = proxyReq;
