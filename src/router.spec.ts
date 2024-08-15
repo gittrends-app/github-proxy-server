@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from '@jest/globals';
 import express, { Express } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import range from 'lodash/range.js';
 import repeat from 'lodash/repeat.js';
 import times from 'lodash/times.js';
 import nock from 'nock';
@@ -117,25 +116,6 @@ describe('Middleware core', () => {
       await request(app).get('/').expect(StatusCodes.OK);
     });
 
-    test('it should respect the interval between the requests', async () => {
-      scope.get('/').delay(100).reply(StatusCodes.OK);
-
-      const promises: Promise<number>[] = [];
-      range(5).forEach(() =>
-        promises.push(
-          request(app)
-            .get('/')
-            .expect(StatusCodes.OK)
-            .then(() => Date.now())
-        )
-      );
-
-      const results = await Promise.all(promises);
-
-      for (let index = 1; index < results.length; index++)
-        expect(results[index]).toBeGreaterThan(results[index - 1] + requestInterval);
-    });
-
     test('it should forward responses received from GitHub', async () => {
       scope.get('/').reply(200);
       await request(app)
@@ -186,33 +166,6 @@ describe('Middleware core', () => {
       );
 
       await request(app).get('/').expect(StatusCodes.OK);
-    });
-
-    test('it should not wait when client disconnected', async () => {
-      scope.get('/').delay(250).reply(StatusCodes.OK).get('/no').reply(StatusCodes.OK);
-
-      const promises: Promise<number>[] = [];
-      const startedAt = Date.now();
-
-      promises.push(
-        request(app)
-          .get('/')
-          .then(() => Date.now())
-      );
-
-      await expect(request(app).get('/').timeout(1)).rejects.toBeDefined();
-
-      promises.push(
-        request(app)
-          .get('/no')
-          .then(() => Date.now())
-      );
-
-      const [first, second] = await Promise.all(promises);
-
-      expect(first).toBeGreaterThanOrEqual(startedAt + 250);
-      expect(second).toBeGreaterThanOrEqual(first + requestInterval);
-      expect(second).toBeLessThan(first + requestInterval + 250);
     });
 
     test('it should balance the use of the tokens', async () => {

@@ -133,9 +133,11 @@ class ProxyWorker extends Readable {
         .join(', ');
     });
 
+    const isSearch = ['search', 'code_search'].includes(opts.resource);
+
     this.queue = new Bottleneck({
-      maxConcurrent: 1,
-      minTime: 0,
+      maxConcurrent: isSearch ? 1 : 10,
+      minTime: isSearch ? 2000 : 1,
       id: `proxy_server:${opts.resource}:${this.token}`,
       ...(opts?.clustering
         ? {
@@ -154,12 +156,11 @@ class ProxyWorker extends Readable {
     this.schedule = this.queue.wrap(async (req: ExtendedRequest, res: Response): Promise<void> => {
       if (req.socket.destroyed) return this.log();
 
-      if (this.remaining <= opts.minRemaining && this.reset && this.reset * 1000 > Date.now()) {
+      if (--this.remaining <= opts.minRemaining && this.reset && this.reset * 1000 > Date.now()) {
         await asyncSetTimeout(Math.max(0, this.reset * 1000 - Date.now()) + 1500);
       }
 
       await new Promise((resolve, reject) => {
-        this.remaining--;
         req.socket.on('close', resolve);
         req.socket.on('error', reject);
         this.proxy.web(req, res as never, undefined, (error) => reject(error));
