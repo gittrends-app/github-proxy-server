@@ -268,7 +268,7 @@ export default class ProxyRouter extends PassThrough {
     else clients = this.clients.map((client) => client.core);
 
     return (
-      minBy(clients, (client) => client.pending + 1 / client.remaining) as ProxyWorker
+      minBy(clients, (client) => client.queued + 1 / client.remaining) as ProxyWorker
     ).schedule(req, res);
   }
 
