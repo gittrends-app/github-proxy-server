@@ -101,9 +101,7 @@ class ProxyWorker extends Readable {
                 req.socket.on('close', resolve);
                 req.socket.on('error', reject);
                 this.proxy.web(req, res, undefined, (error) => reject(error));
-            })
-                .then(() => asyncSetTimeout(opts.requestInterval))
-                .catch(async () => {
+            }).catch(async () => {
                 this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
                 if (!req.socket.destroyed && !req.socket.writableFinished) {
                     res.sendStatus(StatusCodes.BAD_GATEWAY);
@@ -167,7 +165,7 @@ export default class ProxyRouter extends PassThrough {
         if (!tokens.length)
             throw new Error('At least one token is required!');
         this.clients = [];
-        this.options = Object.assign({ requestInterval: 250, requestTimeout: 20000 }, opts);
+        this.options = Object.assign({ requestTimeout: 20000 }, opts);
         tokens.forEach((token) => this.addToken(token));
     }
     // function to select the best client and queue request

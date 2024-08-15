@@ -39,7 +39,6 @@ describe('Middleware core', () => {
   let middleware: Middleware;
 
   const requestTimeout = 1000;
-  const requestInterval = 250;
 
   beforeEach(async () => {
     if (!nock.isActive()) nock.activate();
@@ -49,7 +48,6 @@ describe('Middleware core', () => {
     app = express();
 
     middleware = new Middleware([FAKE_TOKEN], {
-      requestInterval,
       requestTimeout,
       minRemaining: 0,
       overrideAuthorization: false
@@ -254,7 +252,6 @@ describe('Middleware core', () => {
 
       middleware.destroy();
       middleware = new Middleware([FAKE_TOKEN], {
-        requestInterval,
         requestTimeout,
         minRemaining: 0,
         overrideAuthorization: true

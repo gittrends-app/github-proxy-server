@@ -127,7 +127,6 @@ describe('Test cli utils', () => {
       params = {
         tokens: [repeat('0', 40)],
         minRemaining: 0,
-        requestInterval: 100,
         requestTimeout: 500,
         silent: true
       };

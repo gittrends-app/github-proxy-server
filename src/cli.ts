@@ -35,12 +35,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         .env('GPS_TOKENS_FILE')
     )
     .addOption(
-      new Option('--request-interval [interval]', 'Interval between requests (ms)')
-        .argParser(Number)
-        .default(250)
-        .env('GPS_REQUEST_INTERVAL')
-    )
-    .addOption(
       new Option('--request-timeout [timeout]', 'Request timeout (ms)')
         .argParser(Number)
         .default(30000)
@@ -105,7 +99,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     );
 
     const appOptions: CliOpts = {
-      requestInterval: options.requestInterval,
       requestTimeout: options.requestTimeout,
       silent: options.silent,
       overrideAuthorization: options.overrideAuthorization,

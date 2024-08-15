@@ -2,7 +2,6 @@ import { Request, Response } from 'express';
 import { PassThrough } from 'stream';
 type ProxyWorkerOpts = {
     requestTimeout: number;
-    requestInterval: number;
     minRemaining: number;
     overrideAuthorization?: boolean;
     clustering?: {

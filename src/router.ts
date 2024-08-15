@@ -10,7 +10,6 @@ import { PassThrough, Readable } from 'stream';
 
 type ProxyWorkerOpts = {
   requestTimeout: number;
-  requestInterval: number;
   minRemaining: number;
   overrideAuthorization?: boolean;
   clustering?: {
@@ -164,18 +163,16 @@ class ProxyWorker extends Readable {
         req.socket.on('close', resolve);
         req.socket.on('error', reject);
         this.proxy.web(req, res as never, undefined, (error) => reject(error));
-      })
-        .then(() => asyncSetTimeout(opts.requestInterval))
-        .catch(async () => {
-          this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
+      }).catch(async () => {
+        this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
 
-          if (!req.socket.destroyed && !req.socket.writableFinished) {
-            res.sendStatus(StatusCodes.BAD_GATEWAY);
-          }
+        if (!req.socket.destroyed && !req.socket.writableFinished) {
+          res.sendStatus(StatusCodes.BAD_GATEWAY);
+        }
 
-          req.proxyRequest?.destroy();
-          res.destroy();
-        });
+        req.proxyRequest?.destroy();
+        res.destroy();
+      });
     });
   }
 
@@ -246,7 +243,7 @@ export default class ProxyRouter extends PassThrough {
     if (!tokens.length) throw new Error('At least one token is required!');
 
     this.clients = [];
-    this.options = Object.assign({ requestInterval: 250, requestTimeout: 20000 }, opts);
+    this.options = Object.assign({ requestTimeout: 20000 }, opts);
 
     tokens.forEach((token) => this.addToken(token));
   }

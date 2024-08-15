@@ -25,10 +25,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         .addOption(new Option('--tokens [file]', 'File containing a list of tokens')
         .argParser(readTokensFile)
         .env('GPS_TOKENS_FILE'))
-        .addOption(new Option('--request-interval [interval]', 'Interval between requests (ms)')
-        .argParser(Number)
-        .default(250)
-        .env('GPS_REQUEST_INTERVAL'))
         .addOption(new Option('--request-timeout [timeout]', 'Request timeout (ms)')
         .argParser(Number)
         .default(30000)
@@ -69,7 +65,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     (async () => {
         const tokens = [...options.token, ...(options.tokens || [])].reduce((memo, token) => concatTokens(token, memo), []);
         const appOptions = {
-            requestInterval: options.requestInterval,
             requestTimeout: options.requestTimeout,
             silent: options.silent,
             overrideAuthorization: options.overrideAuthorization,
