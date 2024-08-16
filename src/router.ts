@@ -183,7 +183,7 @@ class ProxyWorker extends Readable {
       if (parseInt(headers['x-ratelimit-limit'], 10) > 0) this.remaining = 0;
       else this.remaining -= 1;
     } else {
-      this.remaining = parseInt(headers['x-ratelimit-remaining'], 10);
+      this.remaining = parseInt(headers['x-ratelimit-remaining'], 10) - this.pending;
       this.reset = parseInt(headers['x-ratelimit-reset'], 10);
     }
   }
