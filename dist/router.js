@@ -95,7 +95,8 @@ class ProxyWorker extends Readable {
             if (req.socket.destroyed)
                 return this.log();
             if (--this.remaining <= opts.minRemaining && this.reset && this.reset * 1000 > Date.now()) {
-                await asyncSetTimeout(Math.max(0, this.reset * 1000 - Date.now()) + 1500);
+                const resetIn = Math.max(0, this.reset * 1000 - Date.now()) + 1500;
+                await asyncSetTimeout(Math.min(resetIn, this.defaults.reset));
             }
             await new Promise((resolve, reject) => {
                 req.socket.on('close', resolve);
@@ -182,7 +183,9 @@ export default class ProxyRouter extends PassThrough {
             clients = this.clients.map((client) => client.search);
         else
             clients = this.clients.map((client) => client.core);
-        return minBy(clients, (client) => client.pending + 1 / client.remaining).schedule(req, res);
+        const available = clients.filter((client) => client.actualRemaining > 0);
+        const worker = minBy(available.length > 0 ? available : clients, (client) => client.pending + 1 / client.remaining);
+        return worker.schedule(req, res);
     }
     removeToken(token) {
         this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1).forEach((client) => {
