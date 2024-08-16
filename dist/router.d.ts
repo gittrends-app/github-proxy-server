@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { PassThrough } from 'stream';
+import EventEmitter from 'node:events';
 type ProxyWorkerOpts = {
     requestTimeout: number;
     minRemaining: number;
@@ -17,7 +17,7 @@ export interface WorkerLogger {
     pending: number;
     remaining: number;
     reset: number;
-    status: number;
+    status?: number;
     duration: number;
 }
 export type ProxyRouterOpts = ProxyWorkerOpts & {
@@ -26,14 +26,14 @@ export type ProxyRouterOpts = ProxyWorkerOpts & {
 export declare enum ProxyRouterResponse {
     PROXY_ERROR = 600
 }
-export default class ProxyRouter extends PassThrough {
+export default class ProxyRouter extends EventEmitter {
     private readonly clients;
     private readonly options;
     constructor(tokens: string[], opts?: ProxyRouterOpts);
     schedule(req: Request, res: Response): Promise<void>;
-    removeToken(token: string): void;
     addToken(token: string): void;
+    removeToken(token: string): void;
     get tokens(): string[];
-    destroy(error?: Error): this;
+    destroy(): this;
 }
 export {};

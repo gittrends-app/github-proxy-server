@@ -9,25 +9,31 @@ import compact from 'lodash/compact.js';
 import uniq from 'lodash/uniq.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Transform } from 'node:stream';
 import { pino } from 'pino';
 import { pinoHttp } from 'pino-http';
 import pinoPretty from 'pino-pretty';
 import swaggerStats from 'swagger-stats';
-import { TableUserConfig, getBorderCharacters, table } from 'table';
+import { getBorderCharacters, table } from 'table';
 
 import ProxyRouter, { ProxyRouterOpts, ProxyRouterResponse, WorkerLogger } from './router.js';
 
 dayjs.extend(relativeTime);
 
-export class ProxyLogTransform extends Transform {
-  private started = false;
-  private config?: TableUserConfig;
+function logTransform(chunk: WorkerLogger): string {
+  const data = {
+    resource: chunk.resource,
+    token: chunk.token,
+    pending: chunk.pending,
+    remaining: chunk.remaining,
+    reset: dayjs.unix(chunk.reset).fromNow(),
+    status: chalk[/(?![23])\d{3}/i.test(`${chunk.status}`) ? 'redBright' : 'green'](
+      chunk.status || '-'
+    ),
+    duration: `${chunk.duration / 1000}s`
+  };
 
-  constructor() {
-    super({ objectMode: true });
-
-    this.config = {
+  return (
+    table([Object.values(data)], {
       columnDefault: { alignment: 'right', width: 5 },
       columns: {
         0: { width: 11 },
@@ -40,35 +46,8 @@ export class ProxyLogTransform extends Transform {
       },
       border: getBorderCharacters('void'),
       singleLine: true
-    };
-  }
-
-  _transform(chunk: WorkerLogger, encoding: string, done: (error?: Error) => void): void {
-    const data = {
-      resource: chunk.resource,
-      token: chunk.token,
-      pending: chunk.pending,
-      remaining: chunk.remaining,
-      reset: dayjs.unix(chunk.reset).fromNow(),
-      status: chalk[/(?![23])\d{3}/i.test(`${chunk.status}`) ? 'redBright' : 'green'](chunk.status),
-      duration: `${chunk.duration / 1000}s`
-    };
-
-    if (!this.started) {
-      this.started = true;
-      this.push(
-        chalk.bold('Columns: ') +
-          Object.keys(data)
-            .map((v) => chalk.underline(v))
-            .join(', ') +
-          '\n\n'
-      );
-    }
-
-    this.push(table([Object.values(data)], this.config).trimEnd() + '\n');
-
-    done();
-  }
+    }).trimEnd() + '\n'
+  );
 }
 
 // parse tokens from input
@@ -139,8 +118,10 @@ export function createProxyServer(options: CliOpts): Express {
     ...options
   });
 
-  if (!options.silent)
-    proxy.pipe(new ProxyLogTransform().on('data', (data) => app.emit('log', data)));
+  if (!options.silent) {
+    proxy.on('log', (data) => app.emit('log', logTransform(data)));
+    proxy.on('warn', (message) => app.emit('warn', message));
+  }
 
   function notSupported(req: Request, res: Response) {
     res.status(ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });

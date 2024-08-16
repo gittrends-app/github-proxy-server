@@ -9,13 +9,7 @@ import request from 'supertest';
 import { withFile } from 'tmp-promise';
 
 import { ProxyRouterResponse } from './router.js';
-import {
-  CliOpts,
-  ProxyLogTransform,
-  createProxyServer,
-  parseTokens,
-  readTokensFile
-} from './server.js';
+import { CliOpts, createProxyServer, parseTokens, readTokensFile } from './server.js';
 
 type CliCmdResult = {
   code: number;
@@ -73,32 +67,6 @@ describe('Test cli utils', () => {
 
     test('it should throw an error if a file not exists', () => {
       expect(() => readTokensFile('./not-exists.txt')).toThrowError();
-    });
-  });
-
-  describe('Test log transform', () => {
-    const sample = {
-      token: '-',
-      pending: 0,
-      remaining: 0,
-      reset: Date.now() / 1000,
-      status: 0,
-      duration: 0
-    };
-
-    test('it should push a header in the first request', async () => {
-      const logger = new ProxyLogTransform();
-
-      const chunks: string[] = [];
-      logger.on('data', (chunk: string) => chunks.push(chunk));
-
-      logger.write(sample);
-      expect(chunks).toHaveLength(2);
-
-      logger.write(sample);
-      expect(chunks).toHaveLength(3);
-
-      await new Promise((resolve) => logger.end(resolve));
     });
   });
 

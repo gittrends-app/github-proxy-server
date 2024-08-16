@@ -3,9 +3,8 @@ import Bottleneck from 'bottleneck';
 import { default as proxy } from 'http-proxy';
 import { StatusCodes } from 'http-status-codes';
 import minBy from 'lodash/minBy.js';
-import { setTimeout as asyncSetTimeout } from 'node:timers/promises';
-import { PassThrough, Readable } from 'stream';
-class ProxyWorker extends Readable {
+import EventEmitter from 'node:events';
+class ProxyWorker extends EventEmitter {
     queue;
     proxy;
     token;
@@ -14,7 +13,7 @@ class ProxyWorker extends Readable {
     remaining;
     reset = Date.now() / 1000;
     constructor(token, opts) {
-        super({ objectMode: true, read: () => null });
+        super({});
         this.token = token;
         switch (opts.resource) {
             case 'code_search':
@@ -28,6 +27,23 @@ class ProxyWorker extends Readable {
                 this.defaults = { resource: opts.resource, limit: 5000, reset: 1000 * 60 * 60 };
         }
         this.remaining = this.defaults.limit;
+        fetch('https://api.github.com/rate_limit', {
+            headers: {
+                authorization: `token ${token}`,
+                'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
+            }
+        }).then(async (response) => {
+            if (response.status === 401) {
+                this.remaining = 0;
+                this.reset = Infinity;
+                this.emit('warn', `Invalid token detected (${token}).`);
+            }
+            else {
+                const res = (await response.json());
+                this.remaining = res.resources[opts.resource].limit;
+                this.reset = res.resources[opts.resource].reset;
+            }
+        });
         this.proxy = proxy.createProxyServer({
             target: 'https://api.github.com',
             ws: false,
@@ -94,9 +110,9 @@ class ProxyWorker extends Readable {
         this.schedule = this.queue.wrap(async (req, res) => {
             if (req.socket.destroyed)
                 return this.log();
-            if (--this.remaining <= opts.minRemaining && this.reset && this.reset * 1000 > Date.now()) {
-                const resetIn = Math.max(0, this.reset * 1000 - Date.now()) + 1500;
-                await asyncSetTimeout(Math.min(resetIn, this.defaults.reset));
+            if (this.remaining-- <= opts.minRemaining) {
+                this.emit('retry', req, res);
+                return;
             }
             await new Promise((resolve, reject) => {
                 req.socket.on('close', resolve);
@@ -127,13 +143,13 @@ class ProxyWorker extends Readable {
         }
     }
     log(status, startedAt) {
-        this.push({
+        this.emit('log', {
             resource: this.defaults.resource,
             token: this.token.slice(-4),
             pending: this.queued,
             remaining: this.remaining,
             reset: this.reset,
-            status: status || '-',
+            status: status,
             duration: startedAt ? Date.now() - startedAt.getTime() : 0
         });
     }
@@ -148,9 +164,8 @@ class ProxyWorker extends Readable {
     get actualRemaining() {
         return this.remaining - this.pending;
     }
-    destroy(error) {
+    destroy() {
         this.proxy.close();
-        super.destroy(error);
         return this;
     }
 }
@@ -158,11 +173,11 @@ export var ProxyRouterResponse;
 (function (ProxyRouterResponse) {
     ProxyRouterResponse[ProxyRouterResponse["PROXY_ERROR"] = 600] = "PROXY_ERROR";
 })(ProxyRouterResponse || (ProxyRouterResponse = {}));
-export default class ProxyRouter extends PassThrough {
+export default class ProxyRouter extends EventEmitter {
     clients;
     options;
     constructor(tokens, opts) {
-        super({ objectMode: true });
+        super({});
         if (!tokens.length)
             throw new Error('At least one token is required!');
         this.clients = [];
@@ -183,9 +198,28 @@ export default class ProxyRouter extends PassThrough {
             clients = this.clients.map((client) => client.search);
         else
             clients = this.clients.map((client) => client.core);
-        const available = clients.filter((client) => client.actualRemaining > 0);
-        const worker = minBy(available.length > 0 ? available : clients, (client) => client.pending + 1 / client.remaining);
-        return worker.schedule(req, res);
+        const available = clients.filter((client) => client.actualRemaining > (isSearch ? 1 : this.options.minRemaining));
+        if (available.length === 0) {
+            setTimeout(() => this.schedule(req, res), Math.max(0, Math.min(...clients.map((c) => c.reset)) * 1000 - Date.now()) + 1000);
+            return;
+        }
+        else {
+            const worker = minBy(available, (client) => client.pending + 1 / client.remaining);
+            return worker.schedule(req, res);
+        }
+    }
+    addToken(token) {
+        if (this.clients.map((client) => client.token).includes(token))
+            return;
+        const core = new ProxyWorker(token, { ...this.options, resource: 'core' });
+        const search = new ProxyWorker(token, { ...this.options, resource: 'search' });
+        const codeSearch = new ProxyWorker(token, { ...this.options, resource: 'code_search' });
+        const graphql = new ProxyWorker(token, { ...this.options, resource: 'graphql' });
+        for (const worker of [core, search, codeSearch, graphql]) {
+            worker.on('log', (log) => this.emit('log', log));
+            worker.on('retry', (req, res) => this.schedule(req, res));
+        }
+        this.clients.push({ token, core, search, code_search: codeSearch, graphql });
     }
     removeToken(token) {
         this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1).forEach((client) => {
@@ -197,24 +231,11 @@ export default class ProxyRouter extends PassThrough {
             }
         });
     }
-    addToken(token) {
-        if (this.clients.map((client) => client.token).includes(token))
-            return;
-        const core = new ProxyWorker(token, { ...this.options, resource: 'core' });
-        const search = new ProxyWorker(token, { ...this.options, resource: 'search' });
-        const codeSearch = new ProxyWorker(token, { ...this.options, resource: 'code_search' });
-        const graphql = new ProxyWorker(token, { ...this.options, resource: 'graphql' });
-        for (const worker of [core, search, codeSearch, graphql]) {
-            worker.pipe(this, { end: false });
-        }
-        this.clients.push({ token, core, search, code_search: codeSearch, graphql });
-    }
     get tokens() {
         return this.clients.map((client) => client.token);
     }
-    destroy(error) {
+    destroy() {
         this.clients.forEach((client) => this.removeToken(client.token));
-        super.destroy(error);
         return this;
     }
 }
