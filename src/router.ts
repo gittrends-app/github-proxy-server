@@ -1,5 +1,6 @@
 /* Author: Hudson S. Borges */
 import Bottleneck from 'bottleneck';
+import dayjs from 'dayjs';
 import { Request, Response } from 'express';
 import Server, { default as proxy } from 'http-proxy';
 import { StatusCodes } from 'http-status-codes';
@@ -173,7 +174,7 @@ class ProxyWorker extends EventEmitter {
     this.schedule = this.queue.wrap(async (req: ExtendedRequest, res: Response): Promise<void> => {
       if (req.socket.destroyed) return this.log();
 
-      if (this.remaining-- <= opts.minRemaining) {
+      if (this.remaining-- <= opts.minRemaining && this.reset > Date.now() / 1000) {
         this.emit('retry', req, res);
         return;
       }
@@ -280,14 +281,18 @@ export default class ProxyRouter extends EventEmitter {
     else clients = this.clients.map((client) => client.core);
 
     const available = clients.filter(
-      (client) => client.actualRemaining > (isSearch ? 1 : this.options.minRemaining)
+      (client) =>
+        client.actualRemaining > (isSearch ? 1 : this.options.minRemaining) ||
+        client.reset * 1000 < Date.now()
     );
 
     if (available.length === 0) {
-      setTimeout(
-        () => this.schedule(req, res),
-        Math.max(0, Math.min(...clients.map((c) => c.reset)) * 1000 - Date.now()) + 1000
+      const resetAt = Math.min(...clients.map((c) => c.reset)) * 1000;
+      this.emit(
+        'warn',
+        `There is no client available. Retrying at ${dayjs(resetAt).format('HH:mm:ss')}.`
       );
+      setTimeout(() => this.schedule(req, res), Math.max(0, resetAt - Date.now()) + 1000);
       return;
     } else {
       const worker = minBy(
