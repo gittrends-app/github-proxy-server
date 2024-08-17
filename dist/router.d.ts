@@ -27,6 +27,7 @@ export declare enum ProxyRouterResponse {
     PROXY_ERROR = 600
 }
 export default class ProxyRouter extends EventEmitter {
+    readonly limiter: import("p-limit").LimitFunction;
     private readonly clients;
     private readonly options;
     constructor(tokens: string[], opts?: ProxyRouterOpts);

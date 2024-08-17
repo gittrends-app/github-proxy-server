@@ -5,14 +5,16 @@ import { default as proxy } from 'http-proxy';
 import { StatusCodes } from 'http-status-codes';
 import minBy from 'lodash/minBy.js';
 import EventEmitter from 'node:events';
+import { setTimeout } from 'node:timers/promises';
+import Limiter from 'p-limit';
 class ProxyWorker extends EventEmitter {
     queue;
     proxy;
     token;
     schedule;
     defaults;
-    remaining;
-    reset = Date.now() / 1000;
+    remaining = 0;
+    reset = Date.now() / 1000 + 1;
     constructor(token, opts) {
         super({});
         this.token = token;
@@ -27,7 +29,6 @@ class ProxyWorker extends EventEmitter {
             default:
                 this.defaults = { resource: opts.resource, limit: 5000, reset: 1000 * 60 * 60 };
         }
-        this.remaining = this.defaults.limit;
         fetch('https://api.github.com/rate_limit', {
             headers: {
                 authorization: `token ${token}`,
@@ -41,8 +42,9 @@ class ProxyWorker extends EventEmitter {
             }
             else {
                 const res = (await response.json());
-                this.remaining = res.resources[opts.resource].limit;
+                this.remaining = res.resources[opts.resource].remaining;
                 this.reset = res.resources[opts.resource].reset;
+                this.log(undefined, new Date());
             }
         });
         this.proxy = proxy.createProxyServer({
@@ -111,11 +113,12 @@ class ProxyWorker extends EventEmitter {
         this.schedule = this.queue.wrap(async (req, res) => {
             if (req.socket.destroyed)
                 return this.log();
-            if (this.remaining-- <= opts.minRemaining && this.reset > Date.now() / 1000) {
+            if (this.remaining <= opts.minRemaining && this.reset > Date.now() / 1000) {
                 this.emit('retry', req, res);
                 return;
             }
             await new Promise((resolve, reject) => {
+                this.remaining -= 1;
                 req.socket.on('close', resolve);
                 req.socket.on('error', reject);
                 this.proxy.web(req, res, undefined, (error) => reject(error));
@@ -162,9 +165,6 @@ class ProxyWorker extends EventEmitter {
         const { RECEIVED, QUEUED } = this.queue.counts();
         return RECEIVED + QUEUED;
     }
-    get actualRemaining() {
-        return this.remaining - this.pending;
-    }
     destroy() {
         this.proxy.close();
         return this;
@@ -175,6 +175,7 @@ export var ProxyRouterResponse;
     ProxyRouterResponse[ProxyRouterResponse["PROXY_ERROR"] = 600] = "PROXY_ERROR";
 })(ProxyRouterResponse || (ProxyRouterResponse = {}));
 export default class ProxyRouter extends EventEmitter {
+    limiter = Limiter(1);
     clients;
     options;
     constructor(tokens, opts) {
@@ -187,30 +188,33 @@ export default class ProxyRouter extends EventEmitter {
     }
     // function to select the best client and queue request
     async schedule(req, res) {
-        const isGraphQL = req.path.startsWith('/graphql') && req.method === 'POST';
-        const isCodeSearch = req.path.startsWith('/search/code');
-        const isSearch = req.path.startsWith('/search');
-        let clients;
-        if (isGraphQL)
-            clients = this.clients.map((client) => client.graphql);
-        else if (isCodeSearch)
-            clients = this.clients.map((client) => client.code_search);
-        else if (isSearch)
-            clients = this.clients.map((client) => client.search);
-        else
-            clients = this.clients.map((client) => client.core);
-        const available = clients.filter((client) => client.actualRemaining > (isSearch ? 1 : this.options.minRemaining) ||
-            client.reset * 1000 < Date.now());
-        if (available.length === 0) {
-            const resetAt = Math.min(...clients.map((c) => c.reset)) * 1000;
-            this.emit('warn', `There is no client available. Retrying at ${dayjs(resetAt).format('HH:mm:ss')}.`);
-            setTimeout(() => this.schedule(req, res), Math.max(0, resetAt - Date.now()) + 1000);
-            return;
-        }
-        else {
-            const worker = minBy(available, (client) => client.pending + 1 / client.remaining);
-            return worker.schedule(req, res);
-        }
+        return this.limiter(async () => {
+            const isGraphQL = req.path.startsWith('/graphql') && req.method === 'POST';
+            const isCodeSearch = req.path.startsWith('/search/code');
+            const isSearch = req.path.startsWith('/search');
+            let clients;
+            if (isGraphQL)
+                clients = this.clients.map((client) => client.graphql);
+            else if (isCodeSearch)
+                clients = this.clients.map((client) => client.code_search);
+            else if (isSearch)
+                clients = this.clients.map((client) => client.search);
+            else
+                clients = this.clients.map((client) => client.core);
+            const available = clients.filter((client) => client.remaining > (isSearch ? 1 : this.options.minRemaining) ||
+                client.reset * 1000 < Date.now());
+            if (available.length === 0) {
+                const resetAt = Math.min(...clients.map((c) => c.reset)) * 1000;
+                this.emit('warn', `There is no client available. Retrying at ${dayjs(resetAt).format('HH:mm:ss')}.`);
+                return setTimeout(Math.max(0, resetAt - Date.now()) + 1000).then(() => {
+                    this.schedule(req, res);
+                });
+            }
+            else {
+                const client = minBy(available, (client) => client.pending + 1 / client.remaining);
+                client.schedule(req, res);
+            }
+        });
     }
     addToken(token) {
         if (this.clients.map((client) => client.token).includes(token))
@@ -221,6 +225,7 @@ export default class ProxyRouter extends EventEmitter {
         const graphql = new ProxyWorker(token, { ...this.options, resource: 'graphql' });
         for (const worker of [core, search, codeSearch, graphql]) {
             worker.on('log', (log) => this.emit('log', log));
+            worker.on('warn', (message) => this.emit('warn', message));
             worker.on('retry', (req, res) => this.schedule(req, res));
         }
         this.clients.push({ token, core, search, code_search: codeSearch, graphql });
