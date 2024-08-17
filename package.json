@@ -1,6 +1,6 @@
 {
   "name": "@gittrends-app/github-proxy-server",
-  "version": "10.2.3",
+  "version": "10.2.4",
   "exports": "./dist/cli.js",
   "engines": {
     "node": ">=20"
