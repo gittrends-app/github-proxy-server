@@ -199,7 +199,8 @@ export default class ProxyRouter extends EventEmitter {
             clients = this.clients.map((client) => client.search);
         else
             clients = this.clients.map((client) => client.core);
-        const available = clients.filter((client) => client.actualRemaining > (isSearch ? 1 : this.options.minRemaining));
+        const available = clients.filter((client) => client.actualRemaining > (isSearch ? 1 : this.options.minRemaining) ||
+            client.reset * 1000 < Date.now());
         if (available.length === 0) {
             const resetAt = Math.min(...clients.map((c) => c.reset)) * 1000;
             this.emit('warn', `There is no client available. Retrying at ${dayjs(resetAt).format('HH:mm:ss')}.`);
