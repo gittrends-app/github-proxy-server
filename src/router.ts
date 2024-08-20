@@ -156,7 +156,7 @@ class ProxyWorker extends EventEmitter {
 
     this.queue = new Bottleneck({
       maxConcurrent: isSearch ? 1 : 10,
-      minTime: isSearch ? 2000 : 1,
+      minTime: isSearch ? 2000 : 750,
       id: `proxy_server:${opts.resource}:${this.token}`,
       ...(opts?.clustering
         ? {

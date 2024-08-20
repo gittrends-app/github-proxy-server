@@ -95,7 +95,7 @@ class ProxyWorker extends EventEmitter {
         const isSearch = ['search', 'code_search'].includes(opts.resource);
         this.queue = new Bottleneck({
             maxConcurrent: isSearch ? 1 : 10,
-            minTime: isSearch ? 2000 : 1,
+            minTime: isSearch ? 2000 : 600,
             id: `proxy_server:${opts.resource}:${this.token}`,
             ...(opts?.clustering
                 ? {
