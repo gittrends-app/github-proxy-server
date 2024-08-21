@@ -19,6 +19,17 @@ import ProxyRouter, { ProxyRouterOpts, ProxyRouterResponse, WorkerLogger } from 
 
 dayjs.extend(relativeTime);
 
+function statusFormatter(status: number | string): string {
+  switch (true) {
+    case /[23]\d{2}/.test(`${status}`):
+      return chalk.green(status);
+    case /[4]\d{2}/.test(`${status}`):
+      return chalk.yellow(status);
+    default:
+      return chalk.red(status);
+  }
+}
+
 function logTransform(chunk: WorkerLogger): string {
   const data = {
     resource: chunk.resource,
@@ -26,10 +37,8 @@ function logTransform(chunk: WorkerLogger): string {
     pending: chunk.pending,
     remaining: chunk.remaining,
     reset: dayjs.unix(chunk.reset).fromNow(),
-    status: chalk[/(?![23])\d{3}/i.test(`${chunk.status}`) ? 'redBright' : 'green'](
-      chunk.status || '-'
-    ),
-    duration: `${chunk.duration / 1000}s`
+    duration: `${chunk.duration / 1000}s`,
+    status: statusFormatter(chunk.status || '-')
   };
 
   return (
@@ -41,8 +50,8 @@ function logTransform(chunk: WorkerLogger): string {
         2: { width: 3 },
         3: { width: 5 },
         4: { width: 18 },
-        5: { width: 4 },
-        6: { width: 7 }
+        5: { width: 7 },
+        6: { width: `${chunk.status || '-'}`.length, alignment: 'left' }
       },
       border: getBorderCharacters('void'),
       singleLine: true

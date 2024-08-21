@@ -5,6 +5,7 @@ import { default as proxy } from 'http-proxy';
 import { StatusCodes } from 'http-status-codes';
 import minBy from 'lodash/minBy.js';
 import EventEmitter from 'node:events';
+import { Agent } from 'node:https';
 import { setTimeout } from 'node:timers/promises';
 import Limiter from 'p-limit';
 class ProxyWorker extends EventEmitter {
@@ -53,8 +54,13 @@ class ProxyWorker extends EventEmitter {
             xfwd: true,
             changeOrigin: true,
             autoRewrite: true,
-            timeout: opts.requestTimeout,
-            proxyTimeout: opts.requestTimeout
+            proxyTimeout: opts.requestTimeout,
+            agent: new Agent({
+                keepAlive: true,
+                keepAliveMsecs: 15000,
+                timeout: opts.requestTimeout,
+                scheduling: 'fifo'
+            })
         });
         this.proxy.on('proxyReq', (proxyReq, req) => {
             req.proxyRequest = proxyReq;
@@ -95,7 +101,7 @@ class ProxyWorker extends EventEmitter {
         const isSearch = ['search', 'code_search'].includes(opts.resource);
         this.queue = new Bottleneck({
             maxConcurrent: isSearch ? 1 : 10,
-            minTime: isSearch ? 2000 : 750,
+            minTime: isSearch ? 2000 : 250,
             id: `proxy_server:${opts.resource}:${this.token}`,
             ...(opts?.clustering
                 ? {
@@ -119,11 +125,13 @@ class ProxyWorker extends EventEmitter {
             }
             await new Promise((resolve, reject) => {
                 this.remaining -= 1;
-                req.socket.on('close', resolve);
-                req.socket.on('error', reject);
+                req.socket.once('close', resolve);
+                req.socket.once('error', reject);
+                res.once('close', resolve);
+                res.once('error', reject);
                 this.proxy.web(req, res, undefined, (error) => reject(error));
-            }).catch(async () => {
-                this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
+            }).catch(async (error) => {
+                this.log(error.code || ProxyRouterResponse.PROXY_ERROR, req.startedAt);
                 if (!req.socket.destroyed && !req.socket.writableFinished) {
                     res.sendStatus(StatusCodes.BAD_GATEWAY);
                 }

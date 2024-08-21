@@ -7,6 +7,7 @@ import { StatusCodes } from 'http-status-codes';
 import minBy from 'lodash/minBy.js';
 import EventEmitter from 'node:events';
 import { ClientRequest, IncomingMessage } from 'node:http';
+import { Agent } from 'node:https';
 import { setTimeout } from 'node:timers/promises';
 import Limiter from 'p-limit';
 
@@ -40,7 +41,7 @@ export interface WorkerLogger {
   pending: number;
   remaining: number;
   reset: number;
-  status?: number;
+  status?: number | string;
   duration: number;
 }
 
@@ -103,8 +104,13 @@ class ProxyWorker extends EventEmitter {
       xfwd: true,
       changeOrigin: true,
       autoRewrite: true,
-      timeout: opts.requestTimeout,
-      proxyTimeout: opts.requestTimeout
+      proxyTimeout: opts.requestTimeout,
+      agent: new Agent({
+        keepAlive: true,
+        keepAliveMsecs: 15000,
+        timeout: opts.requestTimeout,
+        scheduling: 'fifo'
+      })
     });
 
     this.proxy.on('proxyReq', (proxyReq, req: ExtendedIncomingMessage) => {
@@ -156,7 +162,7 @@ class ProxyWorker extends EventEmitter {
 
     this.queue = new Bottleneck({
       maxConcurrent: isSearch ? 1 : 10,
-      minTime: isSearch ? 2000 : 750,
+      minTime: isSearch ? 2000 : 250,
       id: `proxy_server:${opts.resource}:${this.token}`,
       ...(opts?.clustering
         ? {
@@ -182,11 +188,13 @@ class ProxyWorker extends EventEmitter {
 
       await new Promise((resolve, reject) => {
         this.remaining -= 1;
-        req.socket.on('close', resolve);
-        req.socket.on('error', reject);
+        req.socket.once('close', resolve);
+        req.socket.once('error', reject);
+        res.once('close', resolve);
+        res.once('error', reject);
         this.proxy.web(req, res as never, undefined, (error) => reject(error));
-      }).catch(async () => {
-        this.log(ProxyRouterResponse.PROXY_ERROR, req.startedAt);
+      }).catch(async (error) => {
+        this.log(error.code || ProxyRouterResponse.PROXY_ERROR, req.startedAt);
 
         if (!req.socket.destroyed && !req.socket.writableFinished) {
           res.sendStatus(StatusCodes.BAD_GATEWAY);
@@ -209,7 +217,7 @@ class ProxyWorker extends EventEmitter {
     }
   }
 
-  log(status?: number, startedAt?: Date): void {
+  log(status?: number | string, startedAt?: Date): void {
     this.emit('log', {
       resource: this.defaults.resource,
       token: this.token.slice(-4),

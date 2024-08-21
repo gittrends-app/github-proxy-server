@@ -15,6 +15,16 @@ import swaggerStats from 'swagger-stats';
 import { getBorderCharacters, table } from 'table';
 import ProxyRouter, { ProxyRouterResponse } from './router.js';
 dayjs.extend(relativeTime);
+function statusFormatter(status) {
+    switch (true) {
+        case /[23]\d{2}/.test(`${status}`):
+            return chalk.green(status);
+        case /[4]\d{2}/.test(`${status}`):
+            return chalk.yellow(status);
+        default:
+            return chalk.red(status);
+    }
+}
 function logTransform(chunk) {
     const data = {
         resource: chunk.resource,
@@ -22,8 +32,8 @@ function logTransform(chunk) {
         pending: chunk.pending,
         remaining: chunk.remaining,
         reset: dayjs.unix(chunk.reset).fromNow(),
-        status: chalk[/(?![23])\d{3}/i.test(`${chunk.status}`) ? 'redBright' : 'green'](chunk.status || '-'),
-        duration: `${chunk.duration / 1000}s`
+        duration: `${chunk.duration / 1000}s`,
+        status: statusFormatter(chunk.status || '-')
     };
     return (table([Object.values(data)], {
         columnDefault: { alignment: 'right', width: 5 },
@@ -33,8 +43,8 @@ function logTransform(chunk) {
             2: { width: 3 },
             3: { width: 5 },
             4: { width: 18 },
-            5: { width: 4 },
-            6: { width: 7 }
+            5: { width: 7 },
+            6: { width: `${chunk.status || '-'}`.length, alignment: 'left' }
         },
         border: getBorderCharacters('void'),
         singleLine: true

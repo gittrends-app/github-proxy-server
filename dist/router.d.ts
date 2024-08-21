@@ -17,7 +17,7 @@ export interface WorkerLogger {
     pending: number;
     remaining: number;
     reset: number;
-    status?: number;
+    status?: number | string;
     duration: number;
 }
 export type ProxyRouterOpts = ProxyWorkerOpts & {
