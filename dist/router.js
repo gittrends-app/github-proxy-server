@@ -101,7 +101,6 @@ class ProxyWorker extends EventEmitter {
         const isSearch = ['search', 'code_search'].includes(opts.resource);
         this.queue = new Bottleneck({
             maxConcurrent: isSearch ? 1 : 10,
-            minTime: isSearch ? 2000 : 250,
             id: `proxy_server:${opts.resource}:${this.token}`,
             ...(opts?.clustering
                 ? {
@@ -123,7 +122,7 @@ class ProxyWorker extends EventEmitter {
                 this.emit('retry', req, res);
                 return;
             }
-            await new Promise((resolve, reject) => {
+            const task = new Promise((resolve, reject) => {
                 this.remaining -= 1;
                 req.socket.once('close', resolve);
                 req.socket.once('error', reject);
@@ -138,6 +137,7 @@ class ProxyWorker extends EventEmitter {
                 req.proxyRequest?.destroy();
                 res.destroy();
             });
+            await Promise.all([task, setTimeout(isSearch ? 2000 : 1000)]);
         });
     }
     updateLimits(headers) {
@@ -150,7 +150,7 @@ class ProxyWorker extends EventEmitter {
                 this.remaining -= 1;
         }
         else {
-            this.remaining = parseInt(headers['x-ratelimit-remaining'], 10) - this.pending;
+            this.remaining = parseInt(headers['x-ratelimit-remaining'], 10) - this.running;
             this.reset = parseInt(headers['x-ratelimit-reset'], 10);
         }
     }
@@ -168,6 +168,10 @@ class ProxyWorker extends EventEmitter {
     get pending() {
         const { RECEIVED, QUEUED, RUNNING, EXECUTING } = this.queue.counts();
         return RECEIVED + QUEUED + RUNNING + EXECUTING;
+    }
+    get running() {
+        const { RUNNING, EXECUTING } = this.queue.counts();
+        return RUNNING + EXECUTING;
     }
     get queued() {
         const { RECEIVED, QUEUED } = this.queue.counts();
