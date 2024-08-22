@@ -2,9 +2,9 @@
 
 /* Author: Hudson S. Borges */
 import chalk from 'chalk';
-import { Option, program } from 'commander';
+import { Command, Option } from 'commander';
 import consola from 'consola';
-import { EventEmitter } from 'events';
+import EventEmitter from 'events';
 import ip from 'ip';
 import isNil from 'lodash/isNil.js';
 import isObjectLike from 'lodash/isObjectLike.js';
@@ -15,9 +15,10 @@ import { pathToFileURL } from 'url';
 import packageJson from '../package.json' with { type: "json" };
 import { CliOpts, concatTokens, createProxyServer, readTokensFile } from './server.js';
 
-// parse arguments from command line
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  program
+export function createCli(): Command {
+  const program = new Command();
+
+  return program
     .addOption(
       new Option('-p, --port [port]', 'Port to start the proxy server')
         .argParser(Number)
@@ -80,87 +81,91 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     )
     .addOption(new Option('--no-status-monitor', 'Disable requests monitoring on /status'))
     .version(packageJson.version || '?', '-v, --version', 'output the current version')
-    .parse();
-
-  const options = program.opts();
-
-  if (!options.token.length && !(options.tokens && options.tokens.length)) {
-    consola.info(`${program.helpInformation()}`);
-    consola.error(`Arguments missing ("--token" or "--tokens" is mandatory).\n\n`);
-    process.exit(1);
-  }
-
-  EventEmitter.defaultMaxListeners = Number.MAX_SAFE_INTEGER;
-
-  (async () => {
-    const tokens = [...options.token, ...(options.tokens || [])].reduce(
-      (memo: string[], token: string) => concatTokens(token, memo),
-      []
-    );
-
-    const appOptions: CliOpts = {
-      requestTimeout: options.requestTimeout,
-      silent: options.silent,
-      overrideAuthorization: options.overrideAuthorization,
-      tokens: tokens,
-      clustering: options.clustering
-        ? {
-            host: options.clusteringHost,
-            port: options.clusteringPort,
-            db: options.clusteringDb
-          }
-        : undefined,
-      minRemaining: options.minRemaining,
-      statusMonitor: options.statusMonitor
-    };
-
-    const app = createProxyServer(appOptions);
-
-    app.on('warn', consola.warn).on('log', (data) => process.stdout.write(data.toString()));
-
-    const server = app.listen({ host: '0.0.0.0', port: options.port }, (error?: Error) => {
-      if (error) {
-        consola.error(error);
+    .action(async (options) => {
+      if (!options.token.length && !(options.tokens && options.tokens.length)) {
+        consola.info(`${program.helpInformation()}`);
+        consola.error(`Arguments missing ("--token" or "--tokens" is mandatory).\n\n`);
         process.exit(1);
       }
 
-      const host = `http://${ip.address()}:${options.port}`;
-      consola.success(
-        `Proxy server running on ${host} (tokens: ${chalk.greenBright(tokens.length)})`
+      EventEmitter.defaultMaxListeners = Number.MAX_SAFE_INTEGER;
+
+      const tokens = [...options.token, ...(options.tokens || [])].reduce(
+        (memo: string[], token: string) => concatTokens(token, memo),
+        []
       );
 
-      function formatObject(object: Record<string, unknown>): string {
-        return Object.entries(omitBy(object, (value) => isNil(value)))
-          .sort((a: [string, unknown], b: [string, unknown]) => (a[0] > b[0] ? 1 : -1))
-          .map(
-            ([k, v]) =>
-              `${k}: ${
-                isObjectLike(v)
-                  ? `{ ${formatObject(v as Record<string, unknown>)} }`
-                  : chalk.greenBright(v)
-              }`
-          )
-          .join(', ');
-      }
+      const appOptions: CliOpts = {
+        requestTimeout: options.requestTimeout,
+        silent: options.silent,
+        overrideAuthorization: options.overrideAuthorization,
+        tokens: tokens,
+        clustering: options.clustering
+          ? {
+              host: options.clusteringHost,
+              port: options.clusteringPort,
+              db: options.clusteringDb
+            }
+          : undefined,
+        minRemaining: options.minRemaining,
+        statusMonitor: options.statusMonitor
+      };
 
-      consola.success(
-        `${chalk.bold('Options')}: %s`,
-        formatObject(omit(appOptions, ['token', 'tokens']))
-      );
-    });
+      const app = createProxyServer(appOptions);
 
-    process.on('SIGTERM', async () => {
-      consola.info('SIGTERM signal received: closing HTTP server');
+      app
+        .on('log', (data) => process.stdout.write(data.toString()))
+        .on('warn', consola.warn)
+        .on('error', consola.error);
 
-      server.close((err?: Error) => {
-        if (err) {
-          consola.error(err);
+      const server = app.listen({ host: '0.0.0.0', port: options.port }, (error?: Error) => {
+        if (error) {
+          consola.error(error);
           process.exit(1);
         }
 
-        consola.success('Server closed');
-        process.exit(0);
+        const host = `http://${ip.address()}:${options.port}`;
+        consola.success(
+          `Proxy server running on ${host} (tokens: ${chalk.greenBright(tokens.length)})`
+        );
+
+        function formatObject(object: Record<string, unknown>): string {
+          return Object.entries(omitBy(object, (value) => isNil(value)))
+            .sort((a: [string, unknown], b: [string, unknown]) => (a[0] > b[0] ? 1 : -1))
+            .map(
+              ([k, v]) =>
+                `${k}: ${
+                  isObjectLike(v)
+                    ? `{ ${formatObject(v as Record<string, unknown>)} }`
+                    : chalk.greenBright(v)
+                }`
+            )
+            .join(', ');
+        }
+
+        consola.success(
+          `${chalk.bold('Options')}: %s`,
+          formatObject(omit(appOptions, ['token', 'tokens']))
+        );
+      });
+
+      process.on('SIGTERM', async () => {
+        consola.info('SIGTERM signal received: closing HTTP server');
+
+        server.close((err?: Error) => {
+          if (err) {
+            consola.error(err);
+            process.exit(1);
+          }
+
+          consola.success('Server closed');
+          process.exit(0);
+        });
       });
     });
-  })();
+}
+
+// parse arguments from command line
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  createCli().parse(process.argv);
 }

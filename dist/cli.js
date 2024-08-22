@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /* Author: Hudson S. Borges */
 import chalk from 'chalk';
-import { Option, program } from 'commander';
+import { Command, Option } from 'commander';
 import consola from 'consola';
-import { EventEmitter } from 'events';
+import EventEmitter from 'events';
 import ip from 'ip';
 import isNil from 'lodash/isNil.js';
 import isObjectLike from 'lodash/isObjectLike.js';
@@ -12,9 +12,9 @@ import omitBy from 'lodash/omitBy.js';
 import { pathToFileURL } from 'url';
 import packageJson from '../package.json' with { type: "json" };
 import { concatTokens, createProxyServer, readTokensFile } from './server.js';
-// parse arguments from command line
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-    program
+export function createCli() {
+    const program = new Command();
+    return program
         .addOption(new Option('-p, --port [port]', 'Port to start the proxy server')
         .argParser(Number)
         .default(3000)
@@ -54,15 +54,13 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         .addOption(new Option('--no-override-authorization', 'By default, the authorization header is overrided with a configured token'))
         .addOption(new Option('--no-status-monitor', 'Disable requests monitoring on /status'))
         .version(packageJson.version || '?', '-v, --version', 'output the current version')
-        .parse();
-    const options = program.opts();
-    if (!options.token.length && !(options.tokens && options.tokens.length)) {
-        consola.info(`${program.helpInformation()}`);
-        consola.error(`Arguments missing ("--token" or "--tokens" is mandatory).\n\n`);
-        process.exit(1);
-    }
-    EventEmitter.defaultMaxListeners = Number.MAX_SAFE_INTEGER;
-    (async () => {
+        .action(async (options) => {
+        if (!options.token.length && !(options.tokens && options.tokens.length)) {
+            consola.info(`${program.helpInformation()}`);
+            consola.error(`Arguments missing ("--token" or "--tokens" is mandatory).\n\n`);
+            process.exit(1);
+        }
+        EventEmitter.defaultMaxListeners = Number.MAX_SAFE_INTEGER;
         const tokens = [...options.token, ...(options.tokens || [])].reduce((memo, token) => concatTokens(token, memo), []);
         const appOptions = {
             requestTimeout: options.requestTimeout,
@@ -80,7 +78,10 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
             statusMonitor: options.statusMonitor
         };
         const app = createProxyServer(appOptions);
-        app.on('warn', consola.warn).on('log', (data) => process.stdout.write(data.toString()));
+        app
+            .on('log', (data) => process.stdout.write(data.toString()))
+            .on('warn', consola.warn)
+            .on('error', consola.error);
         const server = app.listen({ host: '0.0.0.0', port: options.port }, (error) => {
             if (error) {
                 consola.error(error);
@@ -109,5 +110,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
                 process.exit(0);
             });
         });
-    })();
+    });
+}
+// parse arguments from command line
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+    createCli().parse(process.argv);
 }

@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import EventEmitter from 'node:events';
-type ProxyWorkerOpts = {
+export type ProxyRouterOpts = {
     requestTimeout: number;
     minRemaining: number;
     overrideAuthorization?: boolean;
@@ -20,9 +20,6 @@ export interface WorkerLogger {
     status?: number | string;
     duration: number;
 }
-export type ProxyRouterOpts = ProxyWorkerOpts & {
-    refreshOnStart?: boolean;
-};
 export declare enum ProxyRouterResponse {
     PROXY_ERROR = 600
 }

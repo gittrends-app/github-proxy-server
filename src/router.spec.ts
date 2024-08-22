@@ -48,10 +48,7 @@ describe('Middleware constructor and methods', () => {
   });
 
   test('it should create only one client per token', () => {
-    const middleware = new Middleware(
-      times(2, () => FAKE_TOKEN),
-      { refreshOnStart: false }
-    );
+    const middleware = new Middleware(times(2, () => FAKE_TOKEN));
     expect(middleware.tokens).toHaveLength(1);
   });
 });

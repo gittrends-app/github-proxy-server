@@ -12,7 +12,7 @@ import { Agent } from 'node:https';
 import { setTimeout } from 'node:timers/promises';
 import Limiter from 'p-limit';
 
-type ProxyWorkerOpts = {
+export type ProxyRouterOpts = {
   requestTimeout: number;
   minRemaining: number;
   overrideAuthorization?: boolean;
@@ -62,7 +62,7 @@ class ProxyWorker extends EventEmitter {
   remaining: number = 0;
   reset: number = Date.now() / 1000 + 1;
 
-  constructor(token: string, opts: ProxyWorkerOpts & { resource: APIResources }) {
+  constructor(token: string, opts: ProxyRouterOpts & { resource: APIResources }) {
     super({});
 
     this.token = token;
@@ -254,8 +254,6 @@ class ProxyWorker extends EventEmitter {
   }
 }
 
-export type ProxyRouterOpts = ProxyWorkerOpts & { refreshOnStart?: boolean };
-
 export enum ProxyRouterResponse {
   PROXY_ERROR = 600
 }
@@ -281,8 +279,6 @@ export default class ProxyRouter extends EventEmitter {
     this.options = Object.assign({ requestTimeout: 20000, minRemaining: 100 }, opts);
 
     tokens.forEach((token) => this.addToken(token));
-
-    if (this.options.refreshOnStart !== false) this.refreshRateLimits();
   }
 
   // function to select the best client and queue request

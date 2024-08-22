@@ -99,6 +99,7 @@ export function createProxyServer(options) {
         overrideAuthorization: options.overrideAuthorization ?? true,
         ...options
     });
+    proxy.on('error', (message) => app.emit('error', message));
     if (!options.silent) {
         proxy.on('log', (data) => app.emit('log', logTransform(data)));
         proxy.on('warn', (message) => app.emit('warn', message));
@@ -113,16 +114,5 @@ export function createProxyServer(options) {
     app.patch('/*', notSupported);
     app.put('/*', notSupported);
     app.post('/*', notSupported);
-    tokens.map((token) => fetch('https://api.github.com/user', {
-        headers: {
-            authorization: `token ${token}`,
-            'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
-        }
-    }).then((response) => {
-        if (response.status !== 401)
-            return response;
-        proxy.removeToken(token);
-        app.emit('warn', `Invalid token detected (${token}).`);
-    }));
     return app;
 }

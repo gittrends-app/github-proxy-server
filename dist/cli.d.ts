@@ -1,2 +1,3 @@
 #!/usr/bin/env node
-export {};
+import { Command } from 'commander';
+export declare function createCli(): Command;

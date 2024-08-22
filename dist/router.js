@@ -200,8 +200,6 @@ export default class ProxyRouter extends EventEmitter {
         this.clients = [];
         this.options = Object.assign({ requestTimeout: 20000, minRemaining: 100 }, opts);
         tokens.forEach((token) => this.addToken(token));
-        if (this.options.refreshOnStart !== false)
-            this.refreshRateLimits();
     }
     // function to select the best client and queue request
     async schedule(req, res) {
