@@ -21,19 +21,20 @@ export interface WorkerLogger {
     duration: number;
 }
 export type ProxyRouterOpts = ProxyWorkerOpts & {
-    minRemaining: number;
+    refreshOnStart?: boolean;
 };
 export declare enum ProxyRouterResponse {
     PROXY_ERROR = 600
 }
 export default class ProxyRouter extends EventEmitter {
-    readonly limiter: import("p-limit").LimitFunction;
-    private readonly clients;
     private readonly options;
-    constructor(tokens: string[], opts?: ProxyRouterOpts);
+    private readonly limiter;
+    private readonly clients;
+    constructor(tokens: string[], opts?: Partial<ProxyRouterOpts>);
     schedule(req: Request, res: Response): Promise<void>;
     addToken(token: string): void;
     removeToken(token: string): void;
+    refreshRateLimits(): Promise<void>;
     get tokens(): string[];
     destroy(): this;
 }
