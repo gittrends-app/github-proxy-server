@@ -5,6 +5,7 @@ import { Request, Response } from 'express';
 import Server, { default as proxy } from 'http-proxy';
 import { StatusCodes } from 'http-status-codes';
 import minBy from 'lodash/minBy.js';
+import fetch from 'node-fetch';
 import EventEmitter from 'node:events';
 import { ClientRequest, IncomingMessage } from 'node:http';
 import { Agent } from 'node:https';
@@ -77,26 +78,6 @@ class ProxyWorker extends EventEmitter {
       default:
         this.defaults = { resource: opts.resource, limit: 5000, reset: 1000 * 60 * 60 };
     }
-
-    fetch('https://api.github.com/rate_limit', {
-      headers: {
-        authorization: `token ${token}`,
-        'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
-      }
-    }).then(async (response) => {
-      if (response.status === 401) {
-        this.remaining = 0;
-        this.reset = Infinity;
-        this.emit('warn', `Invalid token detected (${token}).`);
-      } else {
-        const res = (await response.json()) as {
-          resources: Record<string, { remaining: number; reset: number }>;
-        };
-        this.remaining = res.resources[opts.resource].remaining;
-        this.reset = res.resources[opts.resource].reset;
-        this.log(undefined, new Date());
-      }
-    });
 
     this.proxy = proxy.createProxyServer({
       target: 'https://api.github.com',
@@ -196,7 +177,7 @@ class ProxyWorker extends EventEmitter {
         this.log(error.code || ProxyRouterResponse.PROXY_ERROR, req.startedAt);
 
         if (!req.socket.destroyed && !req.socket.writableFinished) {
-          res.sendStatus(StatusCodes.BAD_GATEWAY);
+          res.status(StatusCodes.BAD_GATEWAY).send();
         }
 
         req.proxyRequest?.destroy();
@@ -207,7 +188,29 @@ class ProxyWorker extends EventEmitter {
     });
   }
 
-  updateLimits(headers: Record<string, string>): void {
+  public async refreshRateLimits(): Promise<void> {
+    await fetch('https://api.github.com/rate_limit', {
+      headers: {
+        authorization: `token ${this.token}`,
+        'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
+      }
+    }).then(async (response) => {
+      if (response.status === 401) {
+        this.remaining = 0;
+        this.reset = Infinity;
+        this.emit('error', `Invalid token detected (${this.token}).`, this.token);
+      } else {
+        const res = (await response.json()) as {
+          resources: Record<string, { remaining: number; reset: number }>;
+        };
+        this.remaining = res.resources[this.defaults.resource].remaining;
+        this.reset = res.resources[this.defaults.resource].reset;
+        this.log(undefined, new Date());
+      }
+    });
+  }
+
+  private updateLimits(headers: Record<string, string>): void {
     if (!headers['x-ratelimit-remaining']) return;
     if (/401/i.test(headers.status)) {
       if (parseInt(headers['x-ratelimit-limit'], 10) > 0) this.remaining = 0;
@@ -218,7 +221,7 @@ class ProxyWorker extends EventEmitter {
     }
   }
 
-  log(status?: number | string, startedAt?: Date): void {
+  private log(status?: number | string, startedAt?: Date): void {
     this.emit('log', {
       resource: this.defaults.resource,
       token: this.token.slice(-4),
@@ -251,14 +254,15 @@ class ProxyWorker extends EventEmitter {
   }
 }
 
-export type ProxyRouterOpts = ProxyWorkerOpts & { minRemaining: number };
+export type ProxyRouterOpts = ProxyWorkerOpts & { refreshOnStart?: boolean };
 
 export enum ProxyRouterResponse {
   PROXY_ERROR = 600
 }
 
 export default class ProxyRouter extends EventEmitter {
-  readonly limiter = Limiter(1);
+  private readonly options: ProxyRouterOpts;
+  private readonly limiter = Limiter(1);
 
   private readonly clients: Array<{
     token: string;
@@ -268,17 +272,17 @@ export default class ProxyRouter extends EventEmitter {
     graphql: ProxyWorker;
   }>;
 
-  private readonly options: ProxyRouterOpts;
-
-  constructor(tokens: string[], opts?: ProxyRouterOpts) {
+  constructor(tokens: string[], opts?: Partial<ProxyRouterOpts>) {
     super({});
 
     if (!tokens.length) throw new Error('At least one token is required!');
 
     this.clients = [];
-    this.options = Object.assign({ requestTimeout: 20000 }, opts);
+    this.options = Object.assign({ requestTimeout: 20000, minRemaining: 100 }, opts);
 
     tokens.forEach((token) => this.addToken(token));
+
+    if (this.options.refreshOnStart !== false) this.refreshRateLimits();
   }
 
   // function to select the best client and queue request
@@ -332,9 +336,11 @@ export default class ProxyRouter extends EventEmitter {
     const graphql = new ProxyWorker(token, { ...this.options, resource: 'graphql' });
 
     for (const worker of [core, search, codeSearch, graphql]) {
+      worker.on('error', (error: unknown) => this.emit('error', error));
+      worker.on('retry', (req: ExtendedRequest, res: Response) => this.schedule(req, res));
       worker.on('log', (log: WorkerLogger) => this.emit('log', log));
       worker.on('warn', (message: string) => this.emit('warn', message));
-      worker.on('retry', (req: ExtendedRequest, res: Response) => this.schedule(req, res));
+      worker.refreshRateLimits().then(() => this.emit('ready'));
     }
 
     this.clients.push({ token, core, search, code_search: codeSearch, graphql });
@@ -349,6 +355,18 @@ export default class ProxyRouter extends EventEmitter {
         worker.destroy();
       }
     });
+  }
+
+  async refreshRateLimits(): Promise<void> {
+    await Promise.all(
+      this.clients.map((client) =>
+        Promise.all(
+          [client.core, client.search, client.code_search, client.graphql].map((w) =>
+            w.refreshRateLimits()
+          )
+        )
+      )
+    ).then(() => this.emit('ready'));
   }
 
   get tokens(): string[] {

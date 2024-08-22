@@ -13,11 +13,30 @@ let app: Express;
 const FAKE_TOKEN = repeat('t', 40);
 
 describe('Middleware constructor and methods', () => {
+  beforeAll(() => {
+    nock('https://api.github.com', { allowUnmocked: false })
+      .get('/rate_limit')
+      .reply(StatusCodes.OK, {
+        resources: {
+          core: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 },
+          search: { limit: 30, remaining: 30, reset: Date.now() + 60 * 60 },
+          code_search: { limit: 10, remaining: 10, reset: Date.now() + 60 * 60 },
+          graphql: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 }
+        }
+      })
+      .persist();
+  });
+
+  afterAll(() => {
+    nock.cleanAll();
+    nock.restore();
+  });
+
   test('it should throw an error if no token is provided', () => {
     expect(() => new Middleware([])).toThrowError();
   });
 
-  test('it should remove/add tokens when requested', () => {
+  test('it should remove/add tokens', () => {
     const middleware = new Middleware([FAKE_TOKEN]);
     expect(middleware.tokens).toHaveLength(1);
 
@@ -29,7 +48,10 @@ describe('Middleware constructor and methods', () => {
   });
 
   test('it should create only one client per token', () => {
-    const middleware = new Middleware(times(2, () => FAKE_TOKEN));
+    const middleware = new Middleware(
+      times(2, () => FAKE_TOKEN),
+      { refreshOnStart: false }
+    );
     expect(middleware.tokens).toHaveLength(1);
   });
 });
@@ -43,7 +65,17 @@ describe('Middleware core', () => {
   beforeEach(async () => {
     if (!nock.isActive()) nock.activate();
 
-    scope = nock('https://api.github.com', { allowUnmocked: false }).persist();
+    scope = nock('https://api.github.com', { allowUnmocked: false })
+      .get('/rate_limit')
+      .reply(StatusCodes.OK, {
+        resources: {
+          core: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 },
+          search: { limit: 30, remaining: 30, reset: Date.now() + 60 * 60 },
+          code_search: { limit: 10, remaining: 10, reset: Date.now() + 60 * 60 },
+          graphql: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 }
+        }
+      })
+      .persist();
 
     app = express();
 
@@ -52,6 +84,8 @@ describe('Middleware core', () => {
       minRemaining: 0,
       overrideAuthorization: false
     });
+
+    await new Promise((resolve) => middleware.on('ready', resolve));
 
     app.get('*', (req, res) => middleware.schedule(req, res));
   });
@@ -97,8 +131,8 @@ describe('Middleware core', () => {
         });
     });
 
-    test.skip(`it should wait if no requests available`, async () => {
-      const waitInterval = 500;
+    test(`it should wait if no requests available`, async () => {
+      const waitInterval = 1000; // must be greather or equal to 1
 
       scope
         .get('/reset')
@@ -111,7 +145,10 @@ describe('Middleware core', () => {
         .reply(StatusCodes.OK);
 
       await request(app).get('/reset').expect(StatusCodes.OK);
+
+      const startedAt = Date.now();
       await request(app).get('/').expect(StatusCodes.OK);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(waitInterval);
     });
 
     test('it should forward responses received from GitHub', async () => {
@@ -146,7 +183,7 @@ describe('Middleware core', () => {
     });
 
     test('it should respond to broken connections', async () => {
-      scope.get('/').delay(100).replyWithError(new Error('Server Error'));
+      scope.get('/').replyWithError(new Error('Server Error'));
 
       return request(app).get('/').expect(StatusCodes.BAD_GATEWAY);
     });
@@ -173,7 +210,10 @@ describe('Middleware core', () => {
         .concat(FAKE_TOKEN)
         .reduce((memo: Record<string, number>, token) => ({ ...memo, [token]: 0 }), {});
 
-      Object.keys(tokens).forEach((token) => middleware.addToken(token));
+      for (const token of Object.keys(tokens)) {
+        middleware.addToken(token);
+        await new Promise((resolve) => middleware.once('ready', resolve));
+      }
 
       middleware.on('log', (data) => {
         const token = Object.keys(tokens).find((token) => token.endsWith(data.token));
