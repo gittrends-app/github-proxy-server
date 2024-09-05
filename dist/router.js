@@ -81,9 +81,13 @@ class ProxyWorker extends EventEmitter {
             })
                 .join(', ');
         });
-        const isSearch = ['search', 'code_search'].includes(opts.resource);
+        let maxConcurrent = 1;
+        if (opts.resource === 'graphql')
+            maxConcurrent = 2;
+        else if (opts.resource === 'core')
+            maxConcurrent = 10;
         this.queue = new Bottleneck({
-            maxConcurrent: isSearch ? 1 : 10,
+            maxConcurrent,
             id: `proxy_server:${opts.resource}:${this.token}`,
             ...(opts?.clustering
                 ? {
@@ -120,7 +124,10 @@ class ProxyWorker extends EventEmitter {
                 req.proxyRequest?.destroy();
                 res.destroy();
             });
-            await Promise.all([task, setTimeout(isSearch ? 2000 : 1000)]);
+            await Promise.all([
+                task,
+                setTimeout(['search', 'code_search'].includes(opts.resource) ? 2000 : 1000)
+            ]);
         });
     }
     async refreshRateLimits() {
