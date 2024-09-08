@@ -1,5 +1,0 @@
-npm run build
-git add dist
-if ! git diff-index --quiet HEAD dist; then
-  git commit -m 'build(husky): husky auto-commit' --no-verify
-fi
