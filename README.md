@@ -38,18 +38,25 @@
 
 ## Getting Started
 
-You will need to install:
+First, you need to clone the repository:
 
 ```bash
-npm install -g gittrends-app/github-proxy-server
-# or globaly
-yarn global add gittrends-app/github-proxy-server
+git clone https://github.com/gittrends-app/github-proxy-server.git
 ```
 
-You may also run it directly without installing:
+Then, install dependencies, build files, and run the server:
 
 ```bash
-npx github:gittrends-app/github-proxy-server ....
+yarn install
+yarn build
+yarn start --help
+```
+
+You can also build and run the Docker image directly:
+
+```bash
+docker build -t github-proxy-server https://github.com/gittrends-app/github-proxy-server.git#master
+docker run --rm -it github-proxy-server --help
 ```
 
 ## Usage
@@ -74,24 +81,24 @@ curl -s http://localhost:3000/users/gittrends-app 2>&1
 
 To more usage information, use the option `--help`.
 
-```
+```bash
 Usage: index [options]
 
 Options:
-  -p, --port <port>               Port to start the proxy server (default: 3000)
-  -t, --token <token>             GitHub token to be used (default: [])
-  --tokens <file>                 File containing a list of tokens
-  --request-interval <interval>   Interval between requests (ms) (default: 250)
-  --request-timeout <timeout>     Request timeout (ms) (default: 20000)
-  --min-remaining <number>        Stop using token on (default: 100)
-  --clustering                    Enable clustering mode (require redis) (default: false)
-  --clustering-redis-host <host>  (clustering) redis host (default: "localhost")
-  --clustering-redis-port <port>  (clustering) redis port (default: 6379)
-  --clustering-redis-db <db>      (clustering) redis db (default: 0)
-  --silent                        Dont show requests outputs (default: false)
-  --no-override-authorization     By default, the authorization header is overrided with a configured token
-  -v, --version                   output the current version
-  -h, --help                      display help for command
+  -p, --port [port]            Port to start the proxy server (default: 3000, env: PORT)
+  -t, --token [token]          GitHub token to be used (default: [])
+  --tokens [file]              File containing a list of tokens (env: GPS_TOKENS_FILE)
+  --request-timeout [timeout]  Request timeout (ms) (default: 30000, env: GPS_REQUEST_TIMEOUT)
+  --min-remaining <number>     Stop using token on a minimum of (default: 100, env: GPS_MIN_REMAINING)
+  --clustering                 (clustering) enable clustering (requires redis) (default: false, env: GPS_CLUSTERING_HOST)
+  --clustering-host [host]     (clustering) redis host (default: "localhost", env: GPS_CLUSTERING_HOST)
+  --clustering-port [port]     (clustering) redis port (default: 6379, env: GPS_CLUSTERING_PORT)
+  --clustering-db [db]         (clustering) redis db (default: 0, env: GPS_CLUSTERING_DB)
+  --silent                     Dont show requests outputs
+  --no-override-authorization  By default, the authorization header is overrided with a configured token
+  --no-status-monitor          Disable requests monitoring on /status
+  -v, --version                output the current version
+  -h, --help                   display help for command
 ```
 
 ## Limitations
