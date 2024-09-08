@@ -10,14 +10,14 @@
   "author": "Hudson Silva Borges <hudsonsilbor@gmail.com>",
   "license": "MIT",
   "scripts": {
-    "start": "NODE_NO_WARNINGS=1 node dist/cli.js",
+    "start": "node dist/cli.js",
     "dev": "tsx watch src/cli.ts",
     "dev-no-reload": "tsx src/cli.ts",
     "jest": "NODE_NO_WARNINGS=1 NODE_OPTIONS=\"$NODE_OPTIONS --experimental-vm-modules\" jest",
     "test": "NODE_NO_WARNINGS=1 NODE_OPTIONS=\"$NODE_OPTIONS --experimental-vm-modules\" jest --no-cache --coverage",
     "commit": "git-cz",
     "lint": "eslint src",
-    "build": "shx rm -rf dist && tsc",
+    "build": "shx rm -rf dist && tsup-node src/cli.ts --format esm --sourcemap --minify",
     "prepare": "husky",
     "prettier": "prettier --write --config .prettierrc.yml --ignore-path .prettierignore  '**/*.ts'",
     "release": "standard-version",
@@ -90,7 +90,8 @@
     "supertest": "^7.0.0",
     "tmp-promise": "^3.0.3",
     "ts-jest": "^29.2.4",
-    "tsx": "^4.16.5",
+    "tsup": "^8.2.4",
+    "tsx": "^4.19.0",
     "typescript": "^5.5.4"
   },
   "config": {
