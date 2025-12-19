@@ -9,6 +9,7 @@ RUN npm install --force
 
 # ---- Build ----
 FROM dependencies AS build
+COPY . .
 RUN npm run build
 
 # ---- Release ----
