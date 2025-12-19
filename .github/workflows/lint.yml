@@ -4,15 +4,15 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src/**'
-      - '.eslint*'
-      - 'tsconfig.json'
+      - "src/**"
+      - "biome.json"
+      - "tsconfig.json"
   pull_request:
     branches: [master]
     paths:
-      - 'src/**'
-      - '.eslint*'
-      - 'tsconfig.json'
+      - "src/**"
+      - "biome.json"
+      - "tsconfig.json"
 
 jobs:
   lint:
@@ -22,11 +22,11 @@ jobs:
       matrix:
         node-version: [20.x]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
-          cache: 'yarn'
+          cache: "yarn"
       - run: yarn
       - run: yarn lint
