@@ -31,8 +31,12 @@
   "publishConfig": {
     "access": "public"
   },
-  "files": ["dist", "architecture.png"],
+  "files": [
+    "dist",
+    "architecture.png"
+  ],
   "dependencies": {
+    "basic-auth": "^2.0.1",
     "bottleneck": "^2.19.5",
     "chalk": "4",
     "commander": "^12.1.0",
@@ -60,6 +64,7 @@
     "@commitlint/config-conventional": "^19.4.1",
     "@tsconfig/node20": "^20.1.4",
     "@types/async": "^3.2.24",
+    "@types/basic-auth": "^1.1.8",
     "@types/http-proxy": "^1.17.15",
     "@types/ip": "^1.1.3",
     "@types/lodash": "^4.17.7",

@@ -34,6 +34,8 @@
 
 - Rate limiter
 
+- Proxy authentication (HTTP Basic Auth)
+
 - Customizable parameters
 
 ## Getting Started
@@ -79,6 +81,28 @@ After that, just make the requests to <http://localhost:3000> instead of <https:
 curl -s http://localhost:3000/users/gittrends-app 2>&1
 ```
 
+### Proxy Authentication
+
+You can protect your proxy server with HTTP Basic Authentication:
+
+```bash
+github-proxy-server -p 3000 -t <access_token> --auth-username myuser --auth-password mypass
+```
+
+Or using environment variables:
+
+```bash
+GPS_AUTH_USERNAME=myuser GPS_AUTH_PASSWORD=mypass github-proxy-server -p 3000 -t <access_token>
+```
+
+Then make authenticated requests:
+
+```bash
+curl -s -u myuser:mypass http://localhost:3000/users/gittrends-app 2>&1
+```
+
+**Note:** The `/status` monitoring endpoint is excluded from authentication to allow health checks.
+
 To more usage information, use the option `--help`.
 
 ```bash
@@ -96,6 +120,8 @@ Options:
   --clustering-db [db]         (clustering) redis db (default: 0, env: GPS_CLUSTERING_DB)
   --silent                     Dont show requests outputs
   --no-override-authorization  By default, the authorization header is overrided with a configured token
+  --auth-username [username]   Proxy authentication username (env: GPS_AUTH_USERNAME)
+  --auth-password [password]   Proxy authentication password (env: GPS_AUTH_PASSWORD)
   --no-status-monitor          Disable requests monitoring on /status
   -v, --version                output the current version
   -h, --help                   display help for command
@@ -107,9 +133,11 @@ GitHub Proxy Server was primarly intended to be a tool to support massive data c
 
 Besides that, **we do not perform any verification on the clients requests, which may implies in security issues for the users who provided their tokens**.
 
-To mitigate this problem, you can ensure that your access tokens are generated using only the necessary scopes (e.g., _public_repo_, _read:user_, etc.).
+To mitigate this problem, you can:
 
-You may also ensure access to the proxy server only to users that you trust.
+- Enable proxy authentication using `--auth-username` and `--auth-password` to restrict access to authorized clients only
+- Ensure that your access tokens are generated using only the necessary scopes (e.g., _public_repo_, _read:user_, etc.)
+- Restrict network access to the proxy server only to users that you trust
 
 ## Integrations
 

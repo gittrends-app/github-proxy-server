@@ -168,3 +168,82 @@ describe('Test create proxy server', () => {
     await request(app).get('/user').expect(StatusCodes.OK);
   });
 });
+
+describe('Test proxy authentication', () => {
+  let params: CliOpts;
+
+  beforeAll(() => {
+    nock('https://api.github.com', { allowUnmocked: false })
+      .get('/rate_limit')
+      .reply(StatusCodes.OK, {
+        resources: {
+          core: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 },
+          search: { limit: 30, remaining: 30, reset: Date.now() + 60 * 60 },
+          code_search: { limit: 10, remaining: 10, reset: Date.now() + 60 * 60 },
+          graphql: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 }
+        }
+      })
+      .persist()
+      .intercept(/.*/, 'get')
+      .reply(200)
+      .post('/graphql')
+      .reply(200);
+  });
+
+  beforeEach(() => {
+    params = {
+      tokens: [repeat('0', 40)],
+      minRemaining: 0,
+      requestTimeout: 500,
+      silent: true,
+      auth: {
+        username: 'testuser',
+        password: 'testpass'
+      }
+    };
+  });
+
+  test('it should require authentication when auth is configured', async () => {
+    const app = createProxyServer(params);
+    await request(app).get('/').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).post('/graphql').expect(StatusCodes.UNAUTHORIZED);
+  });
+
+  test('it should accept valid credentials', async () => {
+    const app = createProxyServer(params);
+    await request(app).get('/').auth('testuser', 'testpass').expect(StatusCodes.OK);
+  });
+
+  test('it should reject invalid username', async () => {
+    const app = createProxyServer(params);
+    await request(app).get('/').auth('wronguser', 'testpass').expect(StatusCodes.UNAUTHORIZED);
+  });
+
+  test('it should reject invalid password', async () => {
+    const app = createProxyServer(params);
+    await request(app).get('/').auth('testuser', 'wrongpass').expect(StatusCodes.UNAUTHORIZED);
+  });
+
+  test('it should return WWW-Authenticate header on unauthorized', async () => {
+    const app = createProxyServer(params);
+    const response = await request(app).get('/').expect(StatusCodes.UNAUTHORIZED);
+    expect(response.headers['www-authenticate']).toBe('Basic realm="GitHub Proxy Server"');
+  });
+
+  test('it should allow access to /status without authentication', async () => {
+    const app = createProxyServer({ ...params, statusMonitor: true });
+    // /status endpoint redirects to /status/ux - follow the redirect
+    const response = await request(app).get('/status').redirects(1);
+    expect(response.status).toBe(StatusCodes.OK);
+  });
+
+  test('it should work with POST /graphql when authenticated', async () => {
+    const app = createProxyServer(params);
+    await request(app).post('/graphql').auth('testuser', 'testpass').expect(StatusCodes.OK);
+  });
+
+  test('it should not require auth when auth option is not provided', async () => {
+    const app = createProxyServer({ ...params, auth: undefined });
+    await request(app).get('/').expect(StatusCodes.OK);
+  });
+});

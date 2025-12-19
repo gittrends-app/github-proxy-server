@@ -79,6 +79,16 @@ export function createCli(): Command {
         'By default, the authorization header is overrided with a configured token'
       )
     )
+    .addOption(
+      new Option('--auth-username [username]', 'Proxy authentication username').env(
+        'GPS_AUTH_USERNAME'
+      )
+    )
+    .addOption(
+      new Option('--auth-password [password]', 'Proxy authentication password').env(
+        'GPS_AUTH_PASSWORD'
+      )
+    )
     .addOption(new Option('--no-status-monitor', 'Disable requests monitoring on /status'))
     .version(packageJson.version || '?', '-v, --version', 'output the current version')
     .action(async (options) => {
@@ -108,7 +118,14 @@ export function createCli(): Command {
             }
           : undefined,
         minRemaining: options.minRemaining,
-        statusMonitor: options.statusMonitor
+        statusMonitor: options.statusMonitor,
+        auth:
+          options.authUsername && options.authPassword
+            ? {
+                username: options.authUsername,
+                password: options.authPassword
+              }
+            : undefined
       };
 
       const app = createProxyServer(appOptions);

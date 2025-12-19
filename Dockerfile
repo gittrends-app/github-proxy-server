@@ -22,6 +22,9 @@ FROM node:20-alpine AS release
 # Create app directory
 WORKDIR /app
 
+# Install curl for healthcheck
+RUN apk add --no-cache curl
+
 # Install app dependencies
 COPY --from=dependencies /app/package*.json ./
 RUN npm ci --omit=dev --ignore-scripts --force
@@ -30,6 +33,9 @@ RUN npm ci --omit=dev --ignore-scripts --force
 COPY --from=build /app/dist ./dist
 
 EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:3000/status || exit 1
 
 ENTRYPOINT [ "node", "dist/cli.js" ]
 CMD [ "--help" ]

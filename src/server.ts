@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import basicAuth from 'basic-auth';
 import chalk from 'chalk';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime.js';
@@ -91,6 +92,10 @@ export type CliOpts = ProxyRouterOpts & {
   tokens: string[];
   silent?: boolean;
   statusMonitor?: boolean;
+  auth?: {
+    username: string;
+    password: string;
+  };
 };
 
 export function createProxyServer(options: CliOpts): Express {
@@ -100,6 +105,25 @@ export function createProxyServer(options: CliOpts): Express {
   );
 
   const app = express();
+
+  if (options.auth) {
+    app.use((req: Request, res: Response, next) => {
+      if (req.path.startsWith('/status')) return next();
+
+      const credentials = basicAuth(req);
+
+      if (
+        !credentials ||
+        credentials.name !== options.auth?.username ||
+        credentials.pass !== options.auth?.password
+      ) {
+        res.set('WWW-Authenticate', 'Basic realm="GitHub Proxy Server"');
+        return res.status(401).send({ message: 'Unauthorized' });
+      }
+
+      next();
+    });
+  }
 
   if (process.env.DEBUG === 'true') {
     app.use(
