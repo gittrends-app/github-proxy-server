@@ -5,11 +5,13 @@ on:
     branches: [master]
     paths:
       - "src/**"
+      - "package.json"
       - "tsconfig.json"
   pull_request:
     branches: [master]
     paths:
       - "src/**"
+      - "package.json"
       - "tsconfig.json"
   workflow_dispatch:
 
