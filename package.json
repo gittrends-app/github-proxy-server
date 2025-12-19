@@ -13,8 +13,9 @@
     "start": "node dist/cli.js",
     "dev": "tsx watch src/cli.ts",
     "dev-no-reload": "tsx src/cli.ts",
-    "jest": "NODE_NO_WARNINGS=1 NODE_OPTIONS=\"$NODE_OPTIONS --experimental-vm-modules\" jest",
-    "test": "NODE_NO_WARNINGS=1 NODE_OPTIONS=\"$NODE_OPTIONS --experimental-vm-modules\" jest --no-cache --coverage",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
     "commit": "git-cz",
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
@@ -30,10 +31,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "files": [
-    "dist",
-    "architecture.png"
-  ],
+  "files": ["dist", "architecture.png"],
   "dependencies": {
     "bottleneck": "^2.19.5",
     "chalk": "4",
@@ -60,30 +58,28 @@
     "@biomejs/biome": "^2.3.10",
     "@commitlint/cli": "^19.4.1",
     "@commitlint/config-conventional": "^19.4.1",
-    "@jest/globals": "^29.7.0",
     "@tsconfig/node20": "^20.1.4",
     "@types/async": "^3.2.24",
     "@types/http-proxy": "^1.17.15",
     "@types/ip": "^1.1.3",
-    "@types/jest": "^29.5.12",
     "@types/lodash": "^4.17.7",
     "@types/node": "^22.5.4",
     "@types/supertest": "^6.0.2",
     "@types/swagger-stats": "^0.95.11",
+    "@vitest/coverage-v8": "^2.1.8",
     "commitizen": "^4.3.0",
     "cz-conventional-changelog": "3.3.0",
     "husky": "^9.1.5",
-    "jest": "^29.7.0",
     "nock": "^13.5.5",
     "np": "^10.0.7",
     "shx": "^0.3.4",
     "standard-version": "^9.5.0",
     "supertest": "^7.0.0",
     "tmp-promise": "^3.0.3",
-    "ts-jest": "^29.2.5",
     "tsup": "^8.2.4",
     "tsx": "^4.19.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.8"
   },
   "config": {
     "commitizen": {

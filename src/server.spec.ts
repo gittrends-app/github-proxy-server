@@ -1,12 +1,12 @@
 import { writeFileSync } from 'node:fs';
 
-import { beforeAll, beforeEach, describe, expect, test } from '@jest/globals';
 import { StatusCodes } from 'http-status-codes';
 import repeat from 'lodash/repeat.js';
 import times from 'lodash/times.js';
 import nock from 'nock';
 import request from 'supertest';
 import { withFile } from 'tmp-promise';
+import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
 
 import { ProxyRouterResponse } from './router.js';
 import { type CliOpts, createProxyServer, parseTokens, readTokensFile } from './server.js';

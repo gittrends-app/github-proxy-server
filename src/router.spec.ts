@@ -1,10 +1,10 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from '@jest/globals';
 import express, { type Express } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import repeat from 'lodash/repeat.js';
 import times from 'lodash/times.js';
 import nock from 'nock';
 import request from 'supertest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 
 import Middleware from './router';
 
