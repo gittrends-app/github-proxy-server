@@ -166,9 +166,7 @@ export function createCli(): Command {
         );
       });
 
-      process.on('SIGTERM', async () => {
-        consola.info('SIGTERM signal received: closing HTTP server');
-
+      const shutdown = async () => {
         server.close((err?: Error) => {
           if (err) {
             consola.error(err);
@@ -177,6 +175,13 @@ export function createCli(): Command {
 
           consola.success('Server closed');
           process.exit(0);
+        });
+      };
+
+      ['SIGTERM', 'SIGINT'].forEach((signal) => {
+        process.on(signal, async () => {
+          consola.info(`${signal} signal received: closing HTTP server`);
+          await shutdown();
         });
       });
     });
