@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [10.4.0](https://github.com/gittrends-app/github-proxy-server/compare/v10.3.2...v10.4.0) (2025-12-19)
+
+
+### Features
+
+* add basic auth to server ([4a12d66](https://github.com/gittrends-app/github-proxy-server/commit/4a12d6658e3dc8fbf2021cde04c92f42c70150c4))
+
 ## [7.1.0](https://github.com/gittrends-app/github-proxy-server/compare/v7.0.2...v7.1.0) (2022-05-10)
 
 
