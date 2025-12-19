@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from '@jest/globals';
-import express, { Express } from 'express';
+import express, { type Express } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import repeat from 'lodash/repeat.js';
 import times from 'lodash/times.js';
@@ -128,7 +128,7 @@ describe('Middleware core', () => {
         });
     });
 
-    test(`it should wait if no requests available`, async () => {
+    test('it should wait if no requests available', async () => {
       const waitInterval = 1000; // must be greather or equal to 1
 
       scope
@@ -306,9 +306,7 @@ describe('Middleware core', () => {
       await request(app)
         .get('/')
         .expect(({ headers, request }) => {
-          expect(headers.link).toEqual(
-            linkStr.replace(new RegExp('https://api.github.com/', 'g'), request.url)
-          );
+          expect(headers.link).toEqual(linkStr.replace(/https:\/\/api.github.com\//g, request.url));
         });
     });
   });

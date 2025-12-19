@@ -1,15 +1,17 @@
 /* Author: Hudson S. Borges */
+import EventEmitter from 'node:events';
+import type { ClientRequest, IncomingMessage } from 'node:http';
+import { Agent } from 'node:https';
+import { setTimeout } from 'node:timers/promises';
+
 import Bottleneck from 'bottleneck';
 import dayjs from 'dayjs';
-import { Request, Response } from 'express';
-import Server, { default as proxy } from 'http-proxy';
+import type { Request, Response } from 'express';
+import type Server from 'http-proxy';
+import { default as proxy } from 'http-proxy';
 import { StatusCodes } from 'http-status-codes';
 import minBy from 'lodash/minBy.js';
 import fetch from 'node-fetch';
-import EventEmitter from 'node:events';
-import { ClientRequest, IncomingMessage } from 'node:http';
-import { Agent } from 'node:https';
-import { setTimeout } from 'node:timers/promises';
 import Limiter from 'p-limit';
 
 export type ProxyRouterOpts = {
@@ -59,7 +61,7 @@ class ProxyWorker extends EventEmitter {
     reset: number;
   };
 
-  remaining: number = 0;
+  remaining = 0;
   reset: number = Date.now() / 1000 + 1;
 
   constructor(token: string, opts: ProxyRouterOpts & { resource: APIResources }) {
@@ -74,7 +76,6 @@ class ProxyWorker extends EventEmitter {
       case 'search':
         this.defaults = { resource: opts.resource, limit: 30, reset: 1000 * 60 };
         break;
-      case 'graphql':
       default:
         this.defaults = { resource: opts.resource, limit: 5000, reset: 1000 * 60 * 60 };
     }
@@ -202,7 +203,7 @@ class ProxyWorker extends EventEmitter {
     }).then(async (response) => {
       if (response.status === 401) {
         this.remaining = 0;
-        this.reset = Infinity;
+        this.reset = Number.POSITIVE_INFINITY;
         this.emit('error', `Invalid token detected (${this.token}).`, this.token);
       } else {
         const res = (await response.json()) as {
@@ -218,11 +219,11 @@ class ProxyWorker extends EventEmitter {
   private updateLimits(headers: Record<string, string>): void {
     if (!headers['x-ratelimit-remaining']) return;
     if (/401/i.test(headers.status)) {
-      if (parseInt(headers['x-ratelimit-limit'], 10) > 0) this.remaining = 0;
+      if (Number.parseInt(headers['x-ratelimit-limit'], 10) > 0) this.remaining = 0;
       else this.remaining -= 1;
     } else {
-      this.remaining = parseInt(headers['x-ratelimit-remaining'], 10) - this.running;
-      this.reset = parseInt(headers['x-ratelimit-reset'], 10);
+      this.remaining = Number.parseInt(headers['x-ratelimit-remaining'], 10) - this.running;
+      this.reset = Number.parseInt(headers['x-ratelimit-reset'], 10);
     }
   }
 
@@ -317,14 +318,13 @@ export default class ProxyRouter extends EventEmitter {
         return setTimeout(Math.max(0, resetAt - Date.now()) + 1000).then(() => {
           this.schedule(req, res);
         });
-      } else {
-        const client = minBy(
-          available,
-          (client) => client.pending + 1 / client.remaining
-        ) as ProxyWorker;
-
-        client.schedule(req, res);
       }
+      const client = minBy(
+        available,
+        (client) => client.pending + 1 / client.remaining
+      ) as ProxyWorker;
+
+      client.schedule(req, res);
     });
   }
 

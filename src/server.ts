@@ -1,21 +1,25 @@
 #!/usr/bin/env node
-
 /* Author: Hudson S. Borges */
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import chalk from 'chalk';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime.js';
-import express, { Express, Request, Response } from 'express';
+import express, { type Express, type Request, type Response } from 'express';
 import compact from 'lodash/compact.js';
 import uniq from 'lodash/uniq.js';
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { pino } from 'pino';
 import { pinoHttp } from 'pino-http';
 import pinoPretty from 'pino-pretty';
 import swaggerStats from 'swagger-stats';
 import { getBorderCharacters, table } from 'table';
 
-import ProxyRouter, { ProxyRouterOpts, ProxyRouterResponse, WorkerLogger } from './router.js';
+import ProxyRouter, {
+  type ProxyRouterOpts,
+  ProxyRouterResponse,
+  type WorkerLogger
+} from './router.js';
 
 dayjs.extend(relativeTime);
 
@@ -41,22 +45,20 @@ function logTransform(chunk: WorkerLogger): string {
     status: statusFormatter(chunk.status || '-')
   };
 
-  return (
-    table([Object.values(data)], {
-      columnDefault: { alignment: 'right', width: 5 },
-      columns: {
-        0: { width: 11 },
-        1: { width: 5 },
-        2: { width: 3 },
-        3: { width: 5 },
-        4: { width: 18 },
-        5: { width: 7 },
-        6: { width: `${chunk.status || '-'}`.length, alignment: 'left' }
-      },
-      border: getBorderCharacters('void'),
-      singleLine: true
-    }).trimEnd() + '\n'
-  );
+  return `${table([Object.values(data)], {
+    columnDefault: { alignment: 'right', width: 5 },
+    columns: {
+      0: { width: 11 },
+      1: { width: 5 },
+      2: { width: 3 },
+      3: { width: 5 },
+      4: { width: 18 },
+      5: { width: 7 },
+      6: { width: `${chunk.status || '-'}`.length, alignment: 'left' }
+    },
+    border: getBorderCharacters('void'),
+    singleLine: true
+  }).trimEnd()}\n`;
 }
 
 // parse tokens from input
@@ -135,7 +137,7 @@ export function createProxyServer(options: CliOpts): Express {
   }
 
   function notSupported(req: Request, res: Response) {
-    res.status(ProxyRouterResponse.PROXY_ERROR).send({ message: `Endpoint not supported` });
+    res.status(ProxyRouterResponse.PROXY_ERROR).send({ message: 'Endpoint not supported' });
   }
 
   app

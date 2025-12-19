@@ -1,5 +1,6 @@
+import { writeFileSync } from 'node:fs';
+
 import { beforeAll, beforeEach, describe, expect, test } from '@jest/globals';
-import { writeFileSync } from 'fs';
 import { StatusCodes } from 'http-status-codes';
 import repeat from 'lodash/repeat.js';
 import times from 'lodash/times.js';
@@ -8,7 +9,7 @@ import request from 'supertest';
 import { withFile } from 'tmp-promise';
 
 import { ProxyRouterResponse } from './router.js';
-import { CliOpts, createProxyServer, parseTokens, readTokensFile } from './server.js';
+import { type CliOpts, createProxyServer, parseTokens, readTokensFile } from './server.js';
 
 describe('Test tokens file parser', () => {
   test('it should check tokens length', () => {
@@ -23,10 +24,10 @@ describe('Test tokens file parser', () => {
 
   test('it should support tokens with owner (<owner>:<token>)', () => {
     const token = times(40, () => 'a').join('');
-    expect(parseTokens('gittrends-app:' + token)).toEqual([token]);
+    expect(parseTokens(`gittrends-app:${token}`)).toEqual([token]);
     expect(
       parseTokens(
-        times(2, (number) => `gittrends-app-${number}:` + times(40, () => number).join('')).join(
+        times(2, (number) => `gittrends-app-${number}:${times(40, () => number).join('')}`).join(
           '\n'
         )
       )
@@ -35,7 +36,7 @@ describe('Test tokens file parser', () => {
 
   test('it should remove duplicated tokens', () => {
     const token = times(40, () => 'a').join('');
-    expect(parseTokens(times(2, () => 'gittrends-app:' + token).join('\n'))).toEqual([token]);
+    expect(parseTokens(times(2, () => `gittrends-app:${token}`).join('\n'))).toEqual([token]);
   });
 
   test('it should read tokens from a file', async () => {
@@ -51,7 +52,7 @@ describe('Test tokens file parser', () => {
   });
 });
 
-describe(`Test create proxy server`, () => {
+describe('Test create proxy server', () => {
   let params: CliOpts;
 
   beforeAll(() => {
@@ -98,7 +99,7 @@ describe(`Test create proxy server`, () => {
     expect(() => createProxyServer(params)).toThrowError();
   });
 
-  test(`it should accept GET requests`, async () => {
+  test('it should accept GET requests', async () => {
     const app = createProxyServer(params);
     await request(app).get('/').expect(StatusCodes.OK);
     await request(app).post('/').expect(ProxyRouterResponse.PROXY_ERROR);
@@ -107,12 +108,12 @@ describe(`Test create proxy server`, () => {
     await request(app).delete('/').expect(ProxyRouterResponse.PROXY_ERROR);
   });
 
-  test(`it should accept POSTs only to /graphql`, async () => {
+  test('it should accept POSTs only to /graphql', async () => {
     const app = createProxyServer(params);
     await request(app).post('/graphql').expect(StatusCodes.OK);
   });
 
-  test(`it should emit logs when enabled`, async () => {
+  test('it should emit logs when enabled', async () => {
     const app = createProxyServer({ ...params, silent: false });
 
     const logs: string[] = [];
@@ -126,7 +127,7 @@ describe(`Test create proxy server`, () => {
     expect(logs.length).toBe(currentLength + 1);
   });
 
-  test(`it should not emit logs when disabled`, async () => {
+  test('it should not emit logs when disabled', async () => {
     const app = createProxyServer({ ...params, silent: true });
 
     const logs: string[] = [];

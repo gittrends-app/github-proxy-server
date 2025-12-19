@@ -1,5 +1,6 @@
+import { exec } from 'node:child_process';
+
 import { describe, expect, test } from '@jest/globals';
-import { exec } from 'child_process';
 
 export type CliCmdResult = {
   code: number;

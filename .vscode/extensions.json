@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "biomejs.biome",
+    "chakrounanas.turbo-console-log",
+    "christian-kohler.npm-intellisense",
+    "editorconfig.editorconfig",
+    "github.copilot",
+    "mikestead.dotenv",
+    "ms-azuretools.vscode-docker",
+    "vitest.explorer"
+  ]
+}

@@ -1,19 +1,19 @@
 #!/usr/bin/env node
-
 /* Author: Hudson S. Borges */
+import EventEmitter from 'node:events';
+import { pathToFileURL } from 'node:url';
+
 import chalk from 'chalk';
 import { Command, Option } from 'commander';
 import consola from 'consola';
-import EventEmitter from 'events';
 import ip from 'ip';
 import isNil from 'lodash/isNil.js';
 import isObjectLike from 'lodash/isObjectLike.js';
 import omit from 'lodash/omit.js';
 import omitBy from 'lodash/omitBy.js';
-import { pathToFileURL } from 'url';
 
-import packageJson from '../package.json' with { type: "json" };
-import { CliOpts, concatTokens, createProxyServer, readTokensFile } from './server.js';
+import packageJson from '../package.json' with { type: 'json' };
+import { type CliOpts, concatTokens, createProxyServer, readTokensFile } from './server.js';
 
 export function createCli(): Command {
   const program = new Command();
@@ -82,7 +82,7 @@ export function createCli(): Command {
     .addOption(new Option('--no-status-monitor', 'Disable requests monitoring on /status'))
     .version(packageJson.version || '?', '-v, --version', 'output the current version')
     .action(async (options) => {
-      if (!options.token.length && !(options.tokens && options.tokens.length)) {
+      if (!options.token.length && !options.tokens?.length) {
         consola.info(`${program.helpInformation()}`);
         consola.error(`Arguments missing ("--token" or "--tokens" is mandatory).\n\n`);
         process.exit(1);
