@@ -4,7 +4,6 @@
   "editor.codeActionsOnSave": {
     "source.organizeImports.biome": "explicit",
     "source.fixAll.biome": "explicit",
-    "source.sortImports": "explicit",
     "source.removeUnusedImports": "explicit"
   }
 }
