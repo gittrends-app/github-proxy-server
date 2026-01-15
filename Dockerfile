@@ -1,5 +1,5 @@
 # ---- Base Node ----
-FROM node:20 AS base
+FROM node:24 AS base
 WORKDIR /app
 COPY package*.json ./
 
@@ -13,7 +13,7 @@ COPY . .
 RUN npm run build
 
 # ---- Release ----
-FROM node:20-alpine AS release
+FROM node:24-alpine AS release
 # Create app directory
 WORKDIR /app
 
@@ -28,7 +28,7 @@ RUN npm ci --omit=dev --ignore-scripts --force
 COPY --from=build /app/dist ./dist
 
 # Default port (configurable via PORT environment variable)
-EXPOSE 3000
+EXPOSE ${PORT:-3000}
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:${PORT:-3000}/status || exit 1

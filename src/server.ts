@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 
 import basicAuth from 'basic-auth';
 import chalk from 'chalk';
+import compression from 'compression';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime.js';
 import express, { type Express, type Request, type Response } from 'express';
@@ -105,6 +106,16 @@ export function createProxyServer(options: CliOpts): Express {
   );
 
   const app = express();
+
+  app.disable('x-powered-by');
+
+  app.use(
+    compression({
+      filter: (req, res) =>
+        req.headers['x-no-compression'] ? false : compression.filter(req, res),
+      level: 6
+    })
+  );
 
   if (options.auth) {
     app.use((req: Request, res: Response, next) => {

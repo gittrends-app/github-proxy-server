@@ -1,18 +1,16 @@
 /* Author: Hudson S. Borges */
 import EventEmitter from 'node:events';
-import type { ClientRequest, IncomingMessage } from 'node:http';
 import { Agent } from 'node:https';
 import { setTimeout } from 'node:timers/promises';
 
 import Bottleneck from 'bottleneck';
 import dayjs from 'dayjs';
 import type { Request, Response } from 'express';
-import type Server from 'http-proxy';
-import { default as proxy } from 'http-proxy';
 import { StatusCodes } from 'http-status-codes';
 import minBy from 'lodash/minBy.js';
-import fetch from 'node-fetch';
 import Limiter from 'p-limit';
+
+import { ProxyClient } from './proxy-client.js';
 
 export type ProxyRouterOpts = {
   requestTimeout: number;
@@ -27,13 +25,7 @@ export type ProxyRouterOpts = {
 
 type ExtendedRequest = Request & {
   startedAt?: Date;
-  proxyRequest?: ClientRequest;
-};
-
-type ExtendedIncomingMessage = IncomingMessage & {
-  startedAt?: Date;
-  hasAuthorization?: boolean;
-  proxyRequest?: ClientRequest;
+  abortController?: AbortController;
 };
 
 type APIResources = 'core' | 'search' | 'code_search' | 'graphql';
@@ -51,9 +43,10 @@ export interface WorkerLogger {
 class ProxyWorker extends EventEmitter {
   readonly queue: Bottleneck;
 
-  readonly proxy: Server;
+  readonly proxy: ProxyClient;
   readonly token: string;
   readonly schedule;
+  private readonly opts: ProxyRouterOpts;
 
   readonly defaults: {
     resource: APIResources;
@@ -68,6 +61,7 @@ class ProxyWorker extends EventEmitter {
     super({});
 
     this.token = token;
+    this.opts = opts;
 
     switch (opts.resource) {
       case 'code_search':
@@ -80,64 +74,15 @@ class ProxyWorker extends EventEmitter {
         this.defaults = { resource: opts.resource, limit: 5000, reset: 1000 * 60 * 60 };
     }
 
-    this.proxy = proxy.createProxyServer({
+    this.proxy = new ProxyClient({
       target: 'https://api.github.com',
-      ws: false,
-      xfwd: true,
-      changeOrigin: true,
-      autoRewrite: true,
-      proxyTimeout: opts.requestTimeout,
+      timeout: opts.requestTimeout,
       agent: new Agent({
         keepAlive: true,
         keepAliveMsecs: 15000,
         timeout: opts.requestTimeout,
         scheduling: 'fifo'
       })
-    });
-
-    this.proxy.on('proxyReq', (proxyReq, req: ExtendedIncomingMessage) => {
-      req.proxyRequest = proxyReq;
-      req.startedAt = new Date();
-      req.hasAuthorization = opts.overrideAuthorization
-        ? false
-        : !!proxyReq.getHeader('authorization');
-
-      if (!req.hasAuthorization) proxyReq.setHeader('authorization', `token ${token}`);
-    });
-
-    this.proxy.on('proxyRes', (proxyRes, req: ExtendedIncomingMessage) => {
-      const replaceURL = (url: string): string =>
-        req.headers.host
-          ? url.replaceAll('https://api.github.com', `http://${req.headers.host}`)
-          : url;
-
-      proxyRes.headers.link =
-        proxyRes.headers.link &&
-        (Array.isArray(proxyRes.headers.link)
-          ? proxyRes.headers.link.map(replaceURL)
-          : replaceURL(proxyRes.headers.link));
-
-      if (req.hasAuthorization) return;
-
-      this.updateLimits({
-        status: `${proxyRes.statusCode}`,
-        ...(proxyRes.headers as Record<string, string>)
-      });
-
-      this.log(proxyRes.statusCode, req.startedAt);
-
-      proxyRes.headers['access-control-expose-headers'] = (
-        proxyRes.headers['access-control-expose-headers'] || ''
-      )
-        .split(', ')
-        .filter((header) => {
-          if (/(ratelimit|scope)/i.test(header)) {
-            delete proxyRes.headers[header.toLowerCase()];
-            return false;
-          }
-          return true;
-        })
-        .join(', ');
     });
 
     let maxConcurrent = 1;
@@ -169,24 +114,90 @@ class ProxyWorker extends EventEmitter {
         return;
       }
 
-      const task = new Promise((resolve, reject) => {
-        this.remaining -= 1;
-        req.socket.once('close', resolve);
-        req.socket.once('error', reject);
-        res.once('close', resolve);
-        res.once('error', reject);
-        this.proxy.once('error', reject);
-        this.proxy.web(req, res as never, undefined, (error) => reject(error));
-      }).catch(async (error) => {
-        this.log(error.code || ProxyRouterResponse.PROXY_ERROR, req.startedAt);
+      req.startedAt = new Date();
+      this.remaining -= 1;
 
-        if (!req.socket.destroyed && !req.socket.writableFinished) {
-          res.status(StatusCodes.BAD_GATEWAY).send();
+      const task = (async () => {
+        try {
+          // Check if request has authorization header
+          const hasAuthorization = opts.overrideAuthorization ? false : !!req.headers.authorization;
+
+          await this.proxy.proxy(req, res, {
+            modifyHeaders: (headers) => {
+              // Inject authorization token if not present
+              if (!hasAuthorization) {
+                headers.authorization = `token ${token}`;
+              }
+              return headers;
+            },
+            onResponse: async (data) => {
+              // Rewrite Link header URLs from GitHub API to proxy server
+              const linkHeader = data.headers.link;
+              if (linkHeader && req.headers.host) {
+                data.headers.link = linkHeader.replaceAll(
+                  'https://api.github.com',
+                  `http://${req.headers.host}`
+                );
+              }
+
+              // Only update rate limits and filter headers if we injected the token
+              if (!hasAuthorization) {
+                // Update rate limits from response headers
+                const status = data.status.toString();
+                const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
+                const rateLimitReset = data.headers['x-ratelimit-reset'];
+                const rateLimitLimit = data.headers['x-ratelimit-limit'];
+
+                if (rateLimitRemaining) {
+                  this.updateLimits({
+                    status,
+                    'x-ratelimit-remaining': rateLimitRemaining,
+                    'x-ratelimit-reset': rateLimitReset || '',
+                    'x-ratelimit-limit': rateLimitLimit || ''
+                  });
+                }
+
+                this.log(data.status, req.startedAt);
+
+                // Remove rate limit and scope headers to hide token info from clients
+                for (const key of Object.keys(data.headers)) {
+                  if (/(ratelimit|scope)/i.test(key)) {
+                    delete data.headers[key];
+                  }
+                }
+
+                // Update access-control-expose-headers to exclude removed headers
+                const exposeHeaders = data.headers['access-control-expose-headers'];
+                if (exposeHeaders) {
+                  const filtered = exposeHeaders
+                    .split(', ')
+                    .filter((header) => !/(ratelimit|scope)/i.test(header))
+                    .join(', ');
+                  if (filtered) {
+                    data.headers['access-control-expose-headers'] = filtered;
+                  } else {
+                    delete data.headers['access-control-expose-headers'];
+                  }
+                }
+              }
+            }
+          });
+        } catch (error) {
+          const err = error as Error & { code?: string };
+          const errorCode = err.code || err.message;
+          this.log(
+            errorCode === 'ETIMEDOUT' ? 'ETIMEDOUT' : ProxyRouterResponse.PROXY_ERROR,
+            req.startedAt
+          );
+
+          if (!req.socket.destroyed && !req.socket.writableFinished) {
+            res.status(StatusCodes.BAD_GATEWAY).send();
+          }
+
+          req.abortController?.abort();
+          res.destroy();
         }
-
-        req.proxyRequest?.destroy();
-        res.destroy();
-      });
+      })();
 
       await Promise.all([
         task,
@@ -256,7 +267,7 @@ class ProxyWorker extends EventEmitter {
   }
 
   destroy(): this {
-    this.proxy.close();
+    // ProxyClient doesn't require explicit cleanup
     return this;
   }
 }
@@ -351,7 +362,6 @@ export default class ProxyRouter extends EventEmitter {
   removeToken(token: string): void {
     this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1).forEach((client) => {
       for (const worker of [client.core, client.search, client.code_search, client.graphql]) {
-        worker.proxy.close();
         worker.queue.stop({ dropWaitingJobs: false });
         worker.queue.disconnect();
         worker.destroy();
