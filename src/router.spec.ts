@@ -84,7 +84,7 @@ describe('Middleware core', () => {
 
     await new Promise((resolve) => middleware.on('ready', resolve));
 
-    app.get('*', (req, res) => middleware.schedule(req, res));
+    app.get('{/*path}', (req, res) => middleware.schedule(req, res));
   });
 
   afterEach(async () => {

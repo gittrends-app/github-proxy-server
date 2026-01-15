@@ -175,6 +175,7 @@ class ProxyWorker extends EventEmitter {
         req.socket.once('error', reject);
         res.once('close', resolve);
         res.once('error', reject);
+        this.proxy.once('error', reject);
         this.proxy.web(req, res as never, undefined, (error) => reject(error));
       }).catch(async (error) => {
         this.log(error.code || ProxyRouterResponse.PROXY_ERROR, req.startedAt);

@@ -166,12 +166,12 @@ export function createProxyServer(options: CliOpts): Express {
 
   app
     .post('/graphql', (req: Request, reply: Response) => proxy.schedule(req, reply))
-    .get('/*', (req: Request, reply: Response) => proxy.schedule(req, reply));
+    .get('{/*path}', (req: Request, reply: Response) => proxy.schedule(req, reply));
 
-  app.delete('/*', notSupported);
-  app.patch('/*', notSupported);
-  app.put('/*', notSupported);
-  app.post('/*', notSupported);
+  app.delete('{/*path}', notSupported);
+  app.patch('{/*path}', notSupported);
+  app.put('{/*path}', notSupported);
+  app.post('{/*path}', notSupported);
 
   return app;
 }
