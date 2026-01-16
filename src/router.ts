@@ -109,10 +109,6 @@ class ProxyWorker extends EventEmitter {
         this._running += 1;
 
         try {
-          if (req.socket.destroyed) {
-            return this.log();
-          }
-
           // Secondary rate limit check (time budget per resource)
           // Wait if budget is less than 5s for safety margin
           if (this.timeBudget < 5000) {
@@ -125,6 +121,10 @@ class ProxyWorker extends EventEmitter {
           if (now >= this.budgetResetAt) {
             this.timeBudget = opts.resource === 'graphql' ? 60000 : 90000;
             this.budgetResetAt = now + 60000;
+          }
+
+          if (req.socket.destroyed) {
+            return this.log();
           }
 
           if (this.remaining <= opts.minRemaining && this.reset > Date.now() / 1000) {
