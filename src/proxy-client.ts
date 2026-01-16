@@ -1,22 +1,23 @@
 /* Author: Hudson S. Borges */
-import type { Agent as HttpAgent, IncomingMessage, ServerResponse } from 'node:http';
-import type { Agent as HttpsAgent } from 'node:https';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+
+import type { Dispatcher } from 'undici';
 
 export interface ProxyClientOptions {
   target: string;
   timeout: number;
-  agent?: HttpAgent | HttpsAgent;
+  dispatcher?: Dispatcher;
 }
 
 export class ProxyClient {
   private readonly target: string;
   private readonly timeout: number;
-  private readonly agent?: HttpAgent | HttpsAgent;
+  private readonly dispatcher?: Dispatcher;
 
   constructor(options: ProxyClientOptions) {
     this.target = options.target;
     this.timeout = options.timeout;
-    this.agent = options.agent;
+    this.dispatcher = options.dispatcher;
   }
 
   /**
@@ -76,7 +77,8 @@ export class ProxyClient {
         headers: modifiedHeaders,
         body: body,
         signal: controller.signal,
-        redirect: 'manual' // Handle redirects manually to preserve headers
+        redirect: 'manual',
+        dispatcher: this.dispatcher
       });
 
       clearTimeout(timeoutId);

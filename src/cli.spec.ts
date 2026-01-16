@@ -79,22 +79,6 @@ describe('createCli command structure', () => {
     expect(minRemainingOption?.defaultValue).toBe(100);
   });
 
-  test('should have clustering options', () => {
-    const clusteringOption = program.options.find((opt) => opt.long === '--clustering');
-    const clusteringHostOption = program.options.find((opt) => opt.long === '--clustering-host');
-    const clusteringPortOption = program.options.find((opt) => opt.long === '--clustering-port');
-    const clusteringDbOption = program.options.find((opt) => opt.long === '--clustering-db');
-
-    expect(clusteringOption).toBeDefined();
-    expect(clusteringHostOption).toBeDefined();
-    expect(clusteringPortOption).toBeDefined();
-    expect(clusteringDbOption).toBeDefined();
-
-    expect(clusteringHostOption?.defaultValue).toBe('localhost');
-    expect(clusteringPortOption?.defaultValue).toBe(6379);
-    expect(clusteringDbOption?.defaultValue).toBe(0);
-  });
-
   test('should have --silent option', () => {
     const silentOption = program.options.find((opt) => opt.long === '--silent');
     expect(silentOption).toBeDefined();
@@ -176,20 +160,6 @@ describe('CLI option parsing', () => {
     expect(minRemainingOption?.parseArg).toBeDefined();
     expect(typeof minRemainingOption?.parseArg).toBe('function');
   });
-
-  test('should have argParser for clustering port', () => {
-    const program = createCli();
-    const clusteringPortOption = program.options.find((opt) => opt.long === '--clustering-port');
-    expect(clusteringPortOption?.parseArg).toBeDefined();
-    expect(typeof clusteringPortOption?.parseArg).toBe('function');
-  });
-
-  test('should have argParser for clustering db', () => {
-    const program = createCli();
-    const clusteringDbOption = program.options.find((opt) => opt.long === '--clustering-db');
-    expect(clusteringDbOption?.parseArg).toBeDefined();
-    expect(typeof clusteringDbOption?.parseArg).toBe('function');
-  });
 });
 
 describe('CLI environment variables', () => {
@@ -215,24 +185,6 @@ describe('CLI environment variables', () => {
     const program = createCli();
     const minRemainingOption = program.options.find((opt) => opt.long === '--min-remaining');
     expect(minRemainingOption?.envVar).toBe('GPS_MIN_REMAINING');
-  });
-
-  test('should support GPS_CLUSTERING_HOST environment variable', () => {
-    const program = createCli();
-    const clusteringHostOption = program.options.find((opt) => opt.long === '--clustering-host');
-    expect(clusteringHostOption?.envVar).toBe('GPS_CLUSTERING_HOST');
-  });
-
-  test('should support GPS_CLUSTERING_PORT environment variable', () => {
-    const program = createCli();
-    const clusteringPortOption = program.options.find((opt) => opt.long === '--clustering-port');
-    expect(clusteringPortOption?.envVar).toBe('GPS_CLUSTERING_PORT');
-  });
-
-  test('should support GPS_CLUSTERING_DB environment variable', () => {
-    const program = createCli();
-    const clusteringDbOption = program.options.find((opt) => opt.long === '--clustering-db');
-    expect(clusteringDbOption?.envVar).toBe('GPS_CLUSTERING_DB');
   });
 
   test('should support GPS_AUTH_USERNAME environment variable', () => {
@@ -427,12 +379,6 @@ describe('CLI flag combinations', () => {
     const program = createCli();
     const minRemainingOption = program.options.find((opt) => opt.long === '--min-remaining');
     expect(minRemainingOption?.required).toBe(true);
-  });
-
-  test('should have clustering option disabled by default', () => {
-    const program = createCli();
-    const clusteringOption = program.options.find((opt) => opt.long === '--clustering');
-    expect(clusteringOption?.defaultValue).toBe(false);
   });
 
   test('should have correct short flag for port', () => {

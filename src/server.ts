@@ -40,9 +40,10 @@ function logTransform(chunk: WorkerLogger): string {
   const data = {
     resource: chunk.resource,
     token: chunk.token,
-    pending: chunk.pending,
+    pending: `${chunk.running}:${chunk.pending}`,
     remaining: chunk.remaining,
     reset: dayjs.unix(chunk.reset).fromNow(),
+    budget: chunk.timeBudget !== undefined ? `${(chunk.timeBudget / 1000).toFixed(1)}s` : '-',
     duration: `${chunk.duration / 1000}s`,
     status: statusFormatter(chunk.status || '-')
   };
@@ -52,11 +53,12 @@ function logTransform(chunk: WorkerLogger): string {
     columns: {
       0: { width: 11 },
       1: { width: 5 },
-      2: { width: 3 },
+      2: { width: 5 },
       3: { width: 5 },
       4: { width: 18 },
       5: { width: 7 },
-      6: { width: `${chunk.status || '-'}`.length, alignment: 'left' }
+      6: { width: 7 },
+      7: { width: `${chunk.status || '-'}`.length, alignment: 'left' }
     },
     border: getBorderCharacters('void'),
     singleLine: true

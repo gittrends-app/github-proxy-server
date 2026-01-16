@@ -1,14 +1,14 @@
 /* Author: Hudson S. Borges */
 import EventEmitter from 'node:events';
-import { Agent } from 'node:https';
 import { setTimeout } from 'node:timers/promises';
 
-import Bottleneck from 'bottleneck';
 import dayjs from 'dayjs';
 import type { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import minBy from 'lodash/minBy.js';
 import Limiter from 'p-limit';
+import PQueue from 'p-queue';
+import { Agent } from 'undici';
 
 import { ProxyClient } from './proxy-client.js';
 
@@ -16,11 +16,6 @@ export type ProxyRouterOpts = {
   requestTimeout: number;
   minRemaining: number;
   overrideAuthorization?: boolean;
-  clustering?: {
-    host: string;
-    port: number;
-    db: number;
-  };
 };
 
 type ExtendedRequest = Request & {
@@ -33,15 +28,17 @@ type APIResources = 'core' | 'search' | 'code_search' | 'graphql';
 export interface WorkerLogger {
   resource: APIResources;
   token: string;
+  running: number;
   pending: number;
   remaining: number;
   reset: number;
+  timeBudget?: number;
   status?: number | string;
   duration: number;
 }
 
 class ProxyWorker extends EventEmitter {
-  readonly queue: Bottleneck;
+  readonly queue: PQueue;
 
   readonly proxy: ProxyClient;
   readonly token: string;
@@ -57,11 +54,22 @@ class ProxyWorker extends EventEmitter {
   remaining = 0;
   reset: number = Date.now() / 1000 + 1;
 
+  // Secondary rate limiting: GraphQL 60s, Others 90s per 60s window
+  timeBudget: number;
+  budgetResetAt: number;
+
+  private _queued = 0;
+  private _running = 0;
+
   constructor(token: string, opts: ProxyRouterOpts & { resource: APIResources }) {
     super({});
 
     this.token = token;
     this.opts = opts;
+
+    // GraphQL: 60s per 60s window, Others: 90s per 60s window (in milliseconds)
+    this.timeBudget = opts.resource === 'graphql' ? 60000 : 90000;
+    this.budgetResetAt = Date.now() + 60000;
 
     switch (opts.resource) {
       case 'code_search':
@@ -77,133 +85,156 @@ class ProxyWorker extends EventEmitter {
     this.proxy = new ProxyClient({
       target: 'https://api.github.com',
       timeout: opts.requestTimeout,
-      agent: new Agent({
-        keepAlive: true,
-        keepAliveMsecs: 15000,
-        timeout: opts.requestTimeout,
-        scheduling: 'fifo'
+      dispatcher: new Agent({
+        connections: 100,
+        pipelining: 10,
+        keepAliveTimeout: 60000,
+        keepAliveMaxTimeout: 600000,
+        headersTimeout: opts.requestTimeout,
+        bodyTimeout: opts.requestTimeout
       })
     });
 
     let maxConcurrent = 1;
-    if (opts.resource === 'graphql') maxConcurrent = 2;
+    if (opts.resource === 'graphql') maxConcurrent = 5;
     else if (opts.resource === 'core') maxConcurrent = 10;
 
-    this.queue = new Bottleneck({
-      maxConcurrent,
-      id: `proxy_server:${opts.resource}:${this.token}`,
-      ...(opts?.clustering
-        ? {
-            datastore: 'ioredis',
-            clearDatastore: false,
-            clientOptions: {
-              host: opts.clustering.host,
-              port: opts.clustering.port,
-              options: { db: opts.clustering.db }
-            },
-            timeout: opts.requestTimeout
-          }
-        : { datastore: 'local' })
-    });
+    this.queue = new PQueue({ concurrency: maxConcurrent });
 
-    this.schedule = this.queue.wrap(async (req: ExtendedRequest, res: Response): Promise<void> => {
-      if (req.socket.destroyed) return this.log();
+    this.schedule = async (req: ExtendedRequest, res: Response): Promise<void> => {
+      this._queued += 1;
 
-      if (this.remaining <= opts.minRemaining && this.reset > Date.now() / 1000) {
-        this.emit('retry', req, res);
-        return;
-      }
+      return this.queue.add(async () => {
+        this._queued -= 1;
+        this._running += 1;
 
-      req.startedAt = new Date();
-      this.remaining -= 1;
-
-      const task = (async () => {
         try {
-          // Check if request has authorization header
-          const hasAuthorization = opts.overrideAuthorization ? false : !!req.headers.authorization;
-
-          await this.proxy.proxy(req, res, {
-            modifyHeaders: (headers) => {
-              // Inject authorization token if not present
-              if (!hasAuthorization) {
-                headers.authorization = `token ${token}`;
-              }
-              return headers;
-            },
-            onResponse: async (data) => {
-              // Rewrite Link header URLs from GitHub API to proxy server
-              const linkHeader = data.headers.link;
-              if (linkHeader && req.headers.host) {
-                data.headers.link = linkHeader.replaceAll(
-                  'https://api.github.com',
-                  `http://${req.headers.host}`
-                );
-              }
-
-              // Only update rate limits and filter headers if we injected the token
-              if (!hasAuthorization) {
-                // Update rate limits from response headers
-                const status = data.status.toString();
-                const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
-                const rateLimitReset = data.headers['x-ratelimit-reset'];
-                const rateLimitLimit = data.headers['x-ratelimit-limit'];
-
-                if (rateLimitRemaining) {
-                  this.updateLimits({
-                    status,
-                    'x-ratelimit-remaining': rateLimitRemaining,
-                    'x-ratelimit-reset': rateLimitReset || '',
-                    'x-ratelimit-limit': rateLimitLimit || ''
-                  });
-                }
-
-                this.log(data.status, req.startedAt);
-
-                // Remove rate limit and scope headers to hide token info from clients
-                for (const key of Object.keys(data.headers)) {
-                  if (/(ratelimit|scope)/i.test(key)) {
-                    delete data.headers[key];
-                  }
-                }
-
-                // Update access-control-expose-headers to exclude removed headers
-                const exposeHeaders = data.headers['access-control-expose-headers'];
-                if (exposeHeaders) {
-                  const filtered = exposeHeaders
-                    .split(', ')
-                    .filter((header) => !/(ratelimit|scope)/i.test(header))
-                    .join(', ');
-                  if (filtered) {
-                    data.headers['access-control-expose-headers'] = filtered;
-                  } else {
-                    delete data.headers['access-control-expose-headers'];
-                  }
-                }
-              }
-            }
-          });
-        } catch (error) {
-          const err = error as Error & { code?: string };
-          const errorCode = err.code || err.message;
-          this.log(
-            errorCode === 'ETIMEDOUT' ? 'ETIMEDOUT' : ProxyRouterResponse.PROXY_ERROR,
-            req.startedAt
-          );
-
-          if (!req.socket.destroyed && !req.socket.writableFinished) {
-            res.status(StatusCodes.BAD_GATEWAY).send();
+          if (req.socket.destroyed) {
+            return this.log();
           }
 
-          req.abortController?.abort();
-          res.destroy();
-        }
-      })();
+          // Secondary rate limit check (time budget per resource)
+          // Wait if budget is less than 5s for safety margin
+          if (this.timeBudget < 5000) {
+            const waitTime = this.budgetResetAt - Date.now();
+            if (waitTime > 0) await setTimeout(waitTime);
+          }
 
-      await Promise.all([
-        task,
-        setTimeout(['search', 'code_search'].includes(opts.resource) ? 2000 : 1000)
-      ]);
-    });
+          // Reset time budget if window expired
+          const now = Date.now();
+          if (now >= this.budgetResetAt) {
+            this.timeBudget = opts.resource === 'graphql' ? 60000 : 90000;
+            this.budgetResetAt = now + 60000;
+          }
+
+          if (this.remaining <= opts.minRemaining && this.reset > Date.now() / 1000) {
+            this.emit('retry', req, res);
+            return;
+          }
+
+          req.startedAt = new Date();
+          this.remaining -= 1;
+
+          const task = (async () => {
+            try {
+              const hasAuthorization = opts.overrideAuthorization
+                ? false
+                : !!req.headers.authorization;
+
+              await this.proxy.proxy(req, res, {
+                modifyHeaders: (headers) => {
+                  if (!hasAuthorization) {
+                    headers.authorization = `token ${token}`;
+                  }
+                  return headers;
+                },
+                onResponse: async (data) => {
+                  const linkHeader = data.headers.link;
+                  if (linkHeader && req.headers.host) {
+                    data.headers.link = linkHeader.replaceAll(
+                      'https://api.github.com',
+                      `http://${req.headers.host}`
+                    );
+                  }
+
+                  // Only update rate limits if we injected the token
+                  if (!hasAuthorization) {
+                    const status = data.status.toString();
+                    const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
+                    const rateLimitReset = data.headers['x-ratelimit-reset'];
+                    const rateLimitLimit = data.headers['x-ratelimit-limit'];
+                    const rateLimitUsed = data.headers['x-ratelimit-used'];
+
+                    if (rateLimitRemaining) {
+                      this.updateLimits({
+                        status,
+                        'x-ratelimit-remaining': rateLimitRemaining,
+                        'x-ratelimit-reset': rateLimitReset || '',
+                        'x-ratelimit-limit': rateLimitLimit || ''
+                      });
+                    }
+
+                    // Prefer x-ratelimit-used header, fallback to measured duration
+                    if (rateLimitUsed) {
+                      const usedTime = Number.parseFloat(rateLimitUsed);
+                      if (!Number.isNaN(usedTime)) {
+                        this.timeBudget -= usedTime;
+                      }
+                    } else if (req.startedAt) {
+                      const requestDuration = Date.now() - req.startedAt.getTime();
+                      this.timeBudget -= requestDuration;
+                    }
+
+                    this.log(data.status, req.startedAt);
+
+                    // Remove rate limit and scope headers
+                    for (const key of Object.keys(data.headers)) {
+                      if (/(ratelimit|scope)/i.test(key)) {
+                        delete data.headers[key];
+                      }
+                    }
+
+                    const exposeHeaders = data.headers['access-control-expose-headers'];
+                    if (exposeHeaders) {
+                      const filtered = exposeHeaders
+                        .split(', ')
+                        .filter((header) => !/(ratelimit|scope)/i.test(header))
+                        .join(', ');
+                      if (filtered) {
+                        data.headers['access-control-expose-headers'] = filtered;
+                      } else {
+                        delete data.headers['access-control-expose-headers'];
+                      }
+                    }
+                  }
+                }
+              });
+            } catch (error) {
+              const err = error as Error & { code?: string };
+              const errorCode = err.code || err.message;
+              this.log(
+                errorCode === 'ETIMEDOUT' ? 'ETIMEDOUT' : ProxyRouterResponse.PROXY_ERROR,
+                req.startedAt
+              );
+
+              if (!req.socket.destroyed && !req.socket.writableFinished) {
+                res.status(StatusCodes.BAD_GATEWAY).send();
+              }
+
+              req.abortController?.abort();
+              res.destroy();
+            }
+          })();
+
+          await Promise.all([
+            task,
+            setTimeout(['search', 'code_search'].includes(opts.resource) ? 2000 : 1000)
+          ]);
+        } finally {
+          this._running -= 1;
+        }
+      });
+    };
   }
 
   public async refreshRateLimits(): Promise<void> {
@@ -223,6 +254,13 @@ class ProxyWorker extends EventEmitter {
         };
         this.remaining = res.resources[this.defaults.resource].remaining;
         this.reset = res.resources[this.defaults.resource].reset;
+
+        const now = Date.now();
+        if (now >= this.budgetResetAt) {
+          this.timeBudget = this.defaults.resource === 'graphql' ? 60000 : 90000;
+          this.budgetResetAt = now + 60000;
+        }
+
         this.log(undefined, new Date());
       }
     });
@@ -243,31 +281,30 @@ class ProxyWorker extends EventEmitter {
     this.emit('log', {
       resource: this.defaults.resource,
       token: this.token.slice(-4),
+      running: this.running,
       pending: this.queued,
       remaining: this.remaining,
       reset: this.reset,
+      timeBudget: this.timeBudget,
       status: status,
       duration: startedAt ? Date.now() - startedAt.getTime() : 0
     } satisfies WorkerLogger);
   }
 
   get pending(): number {
-    const { RECEIVED, QUEUED, RUNNING, EXECUTING } = this.queue.counts();
-    return RECEIVED + QUEUED + RUNNING + EXECUTING;
+    return this.queue.size + this.queue.pending;
   }
 
   get running(): number {
-    const { RUNNING, EXECUTING } = this.queue.counts();
-    return RUNNING + EXECUTING;
+    return this._running;
   }
 
   get queued(): number {
-    const { RECEIVED, QUEUED } = this.queue.counts();
-    return RECEIVED + QUEUED;
+    return this._queued;
   }
 
   destroy(): this {
-    // ProxyClient doesn't require explicit cleanup
+    this.queue.clear();
     return this;
   }
 }
@@ -299,7 +336,6 @@ export default class ProxyRouter extends EventEmitter {
     tokens.forEach((token) => this.addToken(token));
   }
 
-  // function to select the best client and queue request
   async schedule(req: Request, res: Response): Promise<void> {
     return this.limiter(async () => {
       const isGraphQL = req.path.startsWith('/graphql') && req.method === 'POST';
@@ -362,8 +398,6 @@ export default class ProxyRouter extends EventEmitter {
   removeToken(token: string): void {
     this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1).forEach((client) => {
       for (const worker of [client.core, client.search, client.code_search, client.graphql]) {
-        worker.queue.stop({ dropWaitingJobs: false });
-        worker.queue.disconnect();
         worker.destroy();
       }
     });

@@ -47,31 +47,6 @@ export function createCli(): Command {
         .default(100)
         .env('GPS_MIN_REMAINING')
     )
-    .addOption(
-      new Option('--clustering', '(clustering) enable clustering (requires redis)')
-        .default(false)
-        .env('GPS_CLUSTERING_HOST')
-    )
-    .addOption(
-      new Option('--clustering-host [host]', '(clustering) redis host')
-        .implies({ clustering: true })
-        .default('localhost')
-        .env('GPS_CLUSTERING_HOST')
-    )
-    .addOption(
-      new Option('--clustering-port [port]', '(clustering) redis port')
-        .argParser(Number)
-        .implies({ clustering: true })
-        .default(6379)
-        .env('GPS_CLUSTERING_PORT')
-    )
-    .addOption(
-      new Option('--clustering-db [db]', '(clustering) redis db')
-        .argParser(Number)
-        .implies({ clustering: true })
-        .default(0)
-        .env('GPS_CLUSTERING_DB')
-    )
     .addOption(new Option('--silent', 'Dont show requests outputs'))
     .addOption(
       new Option(
@@ -110,13 +85,6 @@ export function createCli(): Command {
         silent: options.silent,
         overrideAuthorization: options.overrideAuthorization,
         tokens: tokens,
-        clustering: options.clustering
-          ? {
-              host: options.clusteringHost,
-              port: options.clusteringPort,
-              db: options.clusteringDb
-            }
-          : undefined,
         minRemaining: options.minRemaining,
         statusMonitor: options.statusMonitor,
         auth:
