@@ -56,7 +56,7 @@ class ProxyWorker extends EventEmitter {
 
   // Secondary rate limiting: GraphQL 60s, Others 90s per 60s window
   timeBudget: number;
-  budgetResetAt: number;
+  private _budgetResetAt: number;
 
   private _queued = 0;
   private _running = 0;
@@ -69,7 +69,7 @@ class ProxyWorker extends EventEmitter {
 
     // GraphQL: 60s per 60s window, Others: 90s per 60s window (in milliseconds)
     this.timeBudget = opts.resource === 'graphql' ? 60000 : 90000;
-    this.budgetResetAt = Date.now() + 60000;
+    this._budgetResetAt = Date.now() + 60000;
 
     switch (opts.resource) {
       case 'code_search':
@@ -110,17 +110,17 @@ class ProxyWorker extends EventEmitter {
 
         try {
           // Secondary rate limit check (time budget per resource)
-          // Wait if budget is less than 5s for safety margin
-          if (this.timeBudget < 5000) {
-            const waitTime = this.budgetResetAt - Date.now();
+          // Wait if budget is less than 6s (10%) for safety margin
+          if (this.timeBudget < 6000) {
+            const waitTime = this._budgetResetAt - Date.now();
             if (waitTime > 0) await setTimeout(waitTime);
           }
 
           // Reset time budget if window expired
           const now = Date.now();
-          if (now >= this.budgetResetAt) {
+          if (now >= this._budgetResetAt) {
             this.timeBudget = opts.resource === 'graphql' ? 60000 : 90000;
-            this.budgetResetAt = now + 60000;
+            this._budgetResetAt = now + 60000;
           }
 
           if (req.socket.destroyed) {
@@ -135,101 +135,88 @@ class ProxyWorker extends EventEmitter {
           req.startedAt = new Date();
           this.remaining -= 1;
 
-          const task = (async () => {
-            try {
-              const hasAuthorization = opts.overrideAuthorization
-                ? false
-                : !!req.headers.authorization;
+          const hasAuthorization = opts.overrideAuthorization ? false : !!req.headers.authorization;
 
-              await this.proxy.proxy(req, res, {
-                modifyHeaders: (headers) => {
-                  if (!hasAuthorization) {
-                    headers.authorization = `token ${token}`;
-                  }
-                  return headers;
-                },
-                onResponse: async (data) => {
-                  const linkHeader = data.headers.link;
-                  if (linkHeader && req.headers.host) {
-                    data.headers.link = linkHeader.replaceAll(
-                      'https://api.github.com',
-                      `http://${req.headers.host}`
-                    );
-                  }
-
-                  // Only update rate limits if we injected the token
-                  if (!hasAuthorization) {
-                    const status = data.status.toString();
-                    const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
-                    const rateLimitReset = data.headers['x-ratelimit-reset'];
-                    const rateLimitLimit = data.headers['x-ratelimit-limit'];
-                    const rateLimitUsed = data.headers['x-ratelimit-used'];
-
-                    if (rateLimitRemaining) {
-                      this.updateLimits({
-                        status,
-                        'x-ratelimit-remaining': rateLimitRemaining,
-                        'x-ratelimit-reset': rateLimitReset || '',
-                        'x-ratelimit-limit': rateLimitLimit || ''
-                      });
-                    }
-
-                    // Prefer x-ratelimit-used header, fallback to measured duration
-                    if (rateLimitUsed) {
-                      const usedTime = Number.parseFloat(rateLimitUsed);
-                      if (!Number.isNaN(usedTime)) {
-                        this.timeBudget -= usedTime;
-                      }
-                    } else if (req.startedAt) {
-                      const requestDuration = Date.now() - req.startedAt.getTime();
-                      this.timeBudget -= requestDuration;
-                    }
-
-                    this.log(data.status, req.startedAt);
-
-                    // Remove rate limit and scope headers
-                    for (const key of Object.keys(data.headers)) {
-                      if (/(ratelimit|scope)/i.test(key)) {
-                        delete data.headers[key];
-                      }
-                    }
-
-                    const exposeHeaders = data.headers['access-control-expose-headers'];
-                    if (exposeHeaders) {
-                      const filtered = exposeHeaders
-                        .split(', ')
-                        .filter((header) => !/(ratelimit|scope)/i.test(header))
-                        .join(', ');
-                      if (filtered) {
-                        data.headers['access-control-expose-headers'] = filtered;
-                      } else {
-                        delete data.headers['access-control-expose-headers'];
-                      }
-                    }
-                  }
-                }
-              });
-            } catch (error) {
-              const err = error as Error & { code?: string };
-              const errorCode = err.code || err.message;
-              this.log(
-                errorCode === 'ETIMEDOUT' ? 'ETIMEDOUT' : ProxyRouterResponse.PROXY_ERROR,
-                req.startedAt
-              );
-
-              if (!req.socket.destroyed && !req.socket.writableFinished) {
-                res.status(StatusCodes.BAD_GATEWAY).send();
+          await this.proxy.proxy(req, res, {
+            modifyHeaders: (headers) => {
+              if (!hasAuthorization) headers.authorization = `token ${token}`;
+              return headers;
+            },
+            onResponse: async (data) => {
+              const linkHeader = data.headers.link;
+              if (linkHeader && req.headers.host) {
+                data.headers.link = linkHeader.replaceAll(
+                  'https://api.github.com',
+                  `http://${req.headers.host}`
+                );
               }
 
-              req.abortController?.abort();
-              res.destroy();
-            }
-          })();
+              // Only update rate limits if we injected the token
+              if (!hasAuthorization) {
+                const status = data.status.toString();
+                const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
+                const rateLimitReset = data.headers['x-ratelimit-reset'];
+                const rateLimitLimit = data.headers['x-ratelimit-limit'];
+                const rateLimitUsed = data.headers['x-ratelimit-used'];
 
-          await Promise.all([
-            task,
-            setTimeout(['search', 'code_search'].includes(opts.resource) ? 2000 : 1000)
-          ]);
+                if (rateLimitRemaining) {
+                  this.updateLimits({
+                    status,
+                    'x-ratelimit-remaining': rateLimitRemaining,
+                    'x-ratelimit-reset': rateLimitReset || '',
+                    'x-ratelimit-limit': rateLimitLimit || ''
+                  });
+                }
+
+                // Prefer x-ratelimit-used header, fallback to measured duration
+                if (rateLimitUsed) {
+                  const usedTime = Number.parseFloat(rateLimitUsed);
+                  if (!Number.isNaN(usedTime)) {
+                    this.timeBudget -= usedTime;
+                  }
+                } else if (req.startedAt) {
+                  const requestDuration = Date.now() - req.startedAt.getTime();
+                  this.timeBudget -= requestDuration;
+                }
+
+                this.log(data.status, req.startedAt);
+
+                // Remove rate limit and scope headers
+                for (const key of Object.keys(data.headers)) {
+                  if (/(ratelimit|scope)/i.test(key)) {
+                    delete data.headers[key];
+                  }
+                }
+
+                const exposeHeaders = data.headers['access-control-expose-headers'];
+                if (exposeHeaders) {
+                  const filtered = exposeHeaders
+                    .split(', ')
+                    .filter((header) => !/(ratelimit|scope)/i.test(header))
+                    .join(', ');
+                  if (filtered) {
+                    data.headers['access-control-expose-headers'] = filtered;
+                  } else {
+                    delete data.headers['access-control-expose-headers'];
+                  }
+                }
+              }
+            }
+          });
+        } catch (error) {
+          const err = error as Error & { code?: string };
+          const errorCode = err.code || err.message;
+          this.log(
+            errorCode === 'ETIMEDOUT' ? 'ETIMEDOUT' : ProxyRouterResponse.PROXY_ERROR,
+            req.startedAt
+          );
+
+          if (!req.socket.destroyed && !req.socket.writableFinished) {
+            res.status(StatusCodes.BAD_GATEWAY).send();
+          }
+
+          req.abortController?.abort();
+          res.destroy();
         } finally {
           this._running -= 1;
         }
@@ -256,9 +243,9 @@ class ProxyWorker extends EventEmitter {
         this.reset = res.resources[this.defaults.resource].reset;
 
         const now = Date.now();
-        if (now >= this.budgetResetAt) {
+        if (now >= this._budgetResetAt) {
           this.timeBudget = this.defaults.resource === 'graphql' ? 60000 : 90000;
-          this.budgetResetAt = now + 60000;
+          this._budgetResetAt = now + 60000;
         }
 
         this.log(undefined, new Date());
@@ -367,10 +354,13 @@ export default class ProxyRouter extends EventEmitter {
           this.schedule(req, res);
         });
       }
-      const client = minBy(
-        available,
-        (client) => client.pending + 1 / client.remaining
-      ) as ProxyWorker;
+
+      // Select the client with the best score (fewest pending and most remaining)
+      const client = minBy(available, (client) => {
+        const requestScore = client.pending + 1 / (client.remaining + 1);
+        const timeScore = 1 / (client.timeBudget / 1000 + 1);
+        return requestScore + timeScore;
+      }) as ProxyWorker;
 
       client.schedule(req, res);
     });
@@ -390,6 +380,8 @@ export default class ProxyRouter extends EventEmitter {
       worker.on('log', (log: WorkerLogger) => this.emit('log', log));
       worker.on('warn', (message: string) => this.emit('warn', message));
       worker.refreshRateLimits().then(() => this.emit('ready'));
+      // Auto-refresh rate limits every 15 minutes
+      setInterval(() => worker.refreshRateLimits(), 15 * 60 * 1000).unref();
     }
 
     this.clients.push({ token, core, search, code_search: codeSearch, graphql });
