@@ -1,0 +1,78 @@
+# Author: Hudson S. Borges
+name: Publish Docker image
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag to publish (e.g. v1.2.3 or 1.2.3)"
+        required: true
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # use a PAT secret instead if necessary
+
+      - name: Determine and validate tag
+        id: meta
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+
+          # normalize (ensure leading v)
+          case "$TAG" in
+            v*) ;;
+            *) TAG="v$TAG" ;;
+          esac
+
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid semantic version tag: $TAG" >&2
+            exit 1
+          fi
+
+          SEMVER="${TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
+          MINOR_TAG="v${MAJOR}.${MINOR}"
+          MAJOR_TAG="v${MAJOR}"
+
+          echo "IMAGE=ghcr.io/${{ github.repository }}" >>"$GITHUB_OUTPUT"
+          echo "TAGS<<EOF" >>"$GITHUB_OUTPUT"
+          echo "$TAG" >>"$GITHUB_OUTPUT"
+          echo "$MINOR_TAG" >>"$GITHUB_OUTPUT"
+          echo "$MAJOR_TAG" >>"$GITHUB_OUTPUT"
+          echo "latest" >>"$GITHUB_OUTPUT"
+          echo "EOF" >>"$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.IMAGE }}:${{ steps.meta.outputs.TAGS }}
