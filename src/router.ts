@@ -5,7 +5,6 @@ import { setTimeout } from 'node:timers/promises';
 import dayjs from 'dayjs';
 import type { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import minBy from 'lodash/minBy.js';
 import PQueue from 'p-queue';
 import { Agent } from 'undici';
 
@@ -103,7 +102,7 @@ class ProxyWorker extends EventEmitter {
       timeout: opts.requestTimeout,
       dispatcher: new Agent({
         connections: 100,
-        pipelining: 10,
+        pipelining: 20,
         keepAliveTimeout: 60000,
         keepAliveMaxTimeout: 600000,
         headersTimeout: opts.requestTimeout,
@@ -263,8 +262,7 @@ class ProxyWorker extends EventEmitter {
    * Called automatically every 60 seconds by interval timer
    */
   private resetTimeBudget(): void {
-    const expectedBudget = this.defaults.resource === 'graphql' ? 60000 : 90000;
-    this.timeBudget = expectedBudget;
+    this.timeBudget = this.defaults.resource === 'graphql' ? 60000 : 90000;
     this._budgetResetAt = Date.now() + 60000;
   }
 
@@ -284,7 +282,7 @@ class ProxyWorker extends EventEmitter {
   canAcceptWork(): boolean {
     return (
       this.queue.pending < (this.queue.concurrency ?? 1) &&
-      this.timeBudget >= 6000 &&
+      this.timeBudget >= this.queue.pending * 1000 &&
       (this.remaining > this.opts.minRemaining || this.reset * 1000 < Date.now())
     );
   }
@@ -443,25 +441,8 @@ export default class ProxyRouter extends EventEmitter {
       });
     }
 
-    // Hybrid push-pull: Try immediate assignment to best available worker
-    const worker = this.selectBestWorker(available);
-    if (worker && worker.canAcceptWork()) {
-      // Direct assignment - skip queue for immediate processing
-      await worker.schedule(req, res);
-    } else {
-      // No worker available - enqueue and notify
-      const queue = this.queues[resourceType];
-      queue.enqueue(req, res);
-      this.emit(`work-available:${resourceType}`);
-    }
-  }
-
-  private selectBestWorker(workers: ProxyWorker[]): ProxyWorker | undefined {
-    return minBy(workers, (client) => {
-      const remainingScore = 1 / (client.remaining + 1);
-      const timeScore = 1 / (client.timeBudget / 1000 + 1);
-      return remainingScore + timeScore;
-    });
+    this.queues[resourceType].enqueue(req, res);
+    this.emit(`work-available:${resourceType}`);
   }
 
   getQueue(resource: APIResources): RequestQueue {
