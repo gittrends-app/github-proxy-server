@@ -40,7 +40,7 @@ function logTransform(chunk: WorkerLogger): string {
   const data = {
     resource: chunk.resource,
     token: chunk.token,
-    pending: `${chunk.running}:${chunk.pending}`,
+    running: chunk.running,
     remaining: chunk.remaining,
     reset: dayjs.unix(chunk.reset).fromNow(),
     budget: chunk.timeBudget !== undefined ? `${(chunk.timeBudget / 1000).toFixed(1)}s` : '-',

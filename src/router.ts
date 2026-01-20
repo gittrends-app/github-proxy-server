@@ -6,7 +6,6 @@ import dayjs from 'dayjs';
 import type { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import minBy from 'lodash/minBy.js';
-import Limiter from 'p-limit';
 import PQueue from 'p-queue';
 import { Agent } from 'undici';
 
@@ -29,12 +28,23 @@ export interface WorkerLogger {
   resource: APIResources;
   token: string;
   running: number;
-  pending: number;
   remaining: number;
   reset: number;
   timeBudget?: number;
   status?: number | string;
   duration: number;
+}
+
+export interface QueuedRequest {
+  req: Request;
+  res: Response;
+}
+
+export interface RequestQueue {
+  items: QueuedRequest[];
+  enqueue(req: Request, res: Response): void;
+  dequeue(): QueuedRequest | undefined;
+  get size(): number;
 }
 
 class ProxyWorker extends EventEmitter {
@@ -43,7 +53,13 @@ class ProxyWorker extends EventEmitter {
   readonly proxy: ProxyClient;
   readonly token: string;
   readonly schedule;
+
   private readonly opts: ProxyRouterOpts;
+  private router?: ProxyRouter;
+  private resourceQueue?: RequestQueue;
+  private pullInterval?: NodeJS.Timeout;
+  private _budgetResetInterval?: NodeJS.Timeout;
+  private checkForWork?: () => Promise<void>;
 
   readonly defaults: {
     resource: APIResources;
@@ -58,9 +74,6 @@ class ProxyWorker extends EventEmitter {
   timeBudget: number;
   private _budgetResetAt: number;
 
-  private _queued = 0;
-  private _running = 0;
-
   constructor(token: string, opts: ProxyRouterOpts & { resource: APIResources }) {
     super({});
 
@@ -70,6 +83,9 @@ class ProxyWorker extends EventEmitter {
     // GraphQL: 60s per 60s window, Others: 90s per 60s window (in milliseconds)
     this.timeBudget = opts.resource === 'graphql' ? 60000 : 90000;
     this._budgetResetAt = Date.now() + 60000;
+
+    // Auto-reset time budget every 60 seconds
+    this._budgetResetInterval = setInterval(() => this.resetTimeBudget(), 60000).unref();
 
     switch (opts.resource) {
       case 'code_search':
@@ -96,31 +112,18 @@ class ProxyWorker extends EventEmitter {
     });
 
     let maxConcurrent = 1;
-    if (opts.resource === 'graphql') maxConcurrent = 5;
-    else if (opts.resource === 'core') maxConcurrent = 10;
+    if (['graphql', 'core'].includes(opts.resource)) maxConcurrent = 10;
 
     this.queue = new PQueue({ concurrency: maxConcurrent });
 
     this.schedule = async (req: ExtendedRequest, res: Response): Promise<void> => {
-      this._queued += 1;
-
       return this.queue.add(async () => {
-        this._queued -= 1;
-        this._running += 1;
-
         try {
           // Secondary rate limit check (time budget per resource)
-          // Wait if budget is less than 6s (10%) for safety margin
-          if (this.timeBudget < 6000) {
+          // Safety margin (estimated 500ms per request)
+          if (this.timeBudget < this.queue.pending * 1000) {
             const waitTime = this._budgetResetAt - Date.now();
             if (waitTime > 0) await setTimeout(waitTime);
-          }
-
-          // Reset time budget if window expired
-          const now = Date.now();
-          if (now >= this._budgetResetAt) {
-            this.timeBudget = opts.resource === 'graphql' ? 60000 : 90000;
-            this._budgetResetAt = now + 60000;
           }
 
           if (req.socket.destroyed) {
@@ -217,8 +220,6 @@ class ProxyWorker extends EventEmitter {
 
           req.abortController?.abort();
           res.destroy();
-        } finally {
-          this._running -= 1;
         }
       });
     };
@@ -241,13 +242,6 @@ class ProxyWorker extends EventEmitter {
         };
         this.remaining = res.resources[this.defaults.resource].remaining;
         this.reset = res.resources[this.defaults.resource].reset;
-
-        const now = Date.now();
-        if (now >= this._budgetResetAt) {
-          this.timeBudget = this.defaults.resource === 'graphql' ? 60000 : 90000;
-          this._budgetResetAt = now + 60000;
-        }
-
         this.log(undefined, new Date());
       }
     });
@@ -259,17 +253,26 @@ class ProxyWorker extends EventEmitter {
       if (Number.parseInt(headers['x-ratelimit-limit'], 10) > 0) this.remaining = 0;
       else this.remaining -= 1;
     } else {
-      this.remaining = Number.parseInt(headers['x-ratelimit-remaining'], 10) - this.running;
+      this.remaining = Number.parseInt(headers['x-ratelimit-remaining'], 10) - this.queue.pending;
       this.reset = Number.parseInt(headers['x-ratelimit-reset'], 10);
     }
+  }
+
+  /**
+   * Reset the time budget window
+   * Called automatically every 60 seconds by interval timer
+   */
+  private resetTimeBudget(): void {
+    const expectedBudget = this.defaults.resource === 'graphql' ? 60000 : 90000;
+    this.timeBudget = expectedBudget;
+    this._budgetResetAt = Date.now() + 60000;
   }
 
   private log(status?: number | string, startedAt?: Date): void {
     this.emit('log', {
       resource: this.defaults.resource,
       token: this.token.slice(-4),
-      running: this.running,
-      pending: this.queued,
+      running: this.queue.pending,
       remaining: this.remaining,
       reset: this.reset,
       timeBudget: this.timeBudget,
@@ -278,21 +281,70 @@ class ProxyWorker extends EventEmitter {
     } satisfies WorkerLogger);
   }
 
-  get pending(): number {
-    return this.queue.size + this.queue.pending;
+  canAcceptWork(): boolean {
+    return (
+      this.queue.pending < (this.queue.concurrency ?? 1) &&
+      this.timeBudget >= 6000 &&
+      (this.remaining > this.opts.minRemaining || this.reset * 1000 < Date.now())
+    );
   }
 
-  get running(): number {
-    return this._running;
+  setRouter(router: ProxyRouter): void {
+    this.router = router;
+    this.resourceQueue = router.getQueue(this.defaults.resource);
+    this.startPullLoop();
   }
 
-  get queued(): number {
-    return this._queued;
+  private startPullLoop(): void {
+    if (!this.router || !this.resourceQueue) return;
+
+    this.checkForWork = async () => {
+      if (!this.canAcceptWork() || !this.resourceQueue) return;
+
+      // Direct queue access - no router intermediary
+      const work = this.resourceQueue.dequeue();
+
+      if (work) {
+        await this.schedule(work.req, work.res);
+      }
+    };
+
+    // Event-driven: router notifies when work available
+    this.router.on(`work-available:${this.defaults.resource}`, this.checkForWork);
+
+    // Fallback polling every 100ms for missed events
+    this.pullInterval = setInterval(this.checkForWork, 100);
+    this.pullInterval.unref();
   }
 
   destroy(): this {
     this.queue.clear();
+    if (this.pullInterval) {
+      clearInterval(this.pullInterval);
+    }
+    if (this._budgetResetInterval) {
+      clearInterval(this._budgetResetInterval);
+    }
+    if (this.router && this.checkForWork) {
+      this.router.removeListener(`work-available:${this.defaults.resource}`, this.checkForWork);
+    }
     return this;
+  }
+}
+
+class QueueImpl implements RequestQueue {
+  items: QueuedRequest[] = [];
+
+  enqueue(req: Request, res: Response): void {
+    this.items.push({ req, res });
+  }
+
+  dequeue(): QueuedRequest | undefined {
+    return this.items.shift();
+  }
+
+  get size(): number {
+    return this.items.length;
   }
 }
 
@@ -302,7 +354,13 @@ export enum ProxyRouterResponse {
 
 export default class ProxyRouter extends EventEmitter {
   private readonly options: ProxyRouterOpts;
-  private readonly limiter = Limiter(1);
+
+  private readonly queues: {
+    core: RequestQueue;
+    search: RequestQueue;
+    code_search: RequestQueue;
+    graphql: RequestQueue;
+  };
 
   private readonly clients: Array<{
     token: string;
@@ -312,6 +370,19 @@ export default class ProxyRouter extends EventEmitter {
     graphql: ProxyWorker;
   }>;
 
+  // Cache worker arrays to avoid repeated map() calls
+  private readonly workersByResource: {
+    core: ProxyWorker[];
+    search: ProxyWorker[];
+    code_search: ProxyWorker[];
+    graphql: ProxyWorker[];
+  } = {
+    core: [],
+    search: [],
+    code_search: [],
+    graphql: []
+  };
+
   constructor(tokens: string[], opts?: Partial<ProxyRouterOpts>) {
     super({});
 
@@ -320,50 +391,81 @@ export default class ProxyRouter extends EventEmitter {
     this.clients = [];
     this.options = Object.assign({ requestTimeout: 20000, minRemaining: 100 }, opts);
 
+    // Initialize per-resource queues
+    this.queues = {
+      core: new QueueImpl(),
+      search: new QueueImpl(),
+      code_search: new QueueImpl(),
+      graphql: new QueueImpl()
+    };
+
     tokens.forEach((token) => this.addToken(token));
   }
 
   async schedule(req: Request, res: Response): Promise<void> {
-    return this.limiter(async () => {
-      const isGraphQL = req.path.startsWith('/graphql') && req.method === 'POST';
-      const isCodeSearch = req.path.startsWith('/search/code');
-      const isSearch = req.path.startsWith('/search');
+    const isGraphQL = req.path.startsWith('/graphql') && req.method === 'POST';
+    const isCodeSearch = req.path.startsWith('/search/code');
+    const isSearch = req.path.startsWith('/search');
 
-      let clients: ProxyWorker[];
+    let resourceType: APIResources;
+    let clients: ProxyWorker[];
 
-      if (isGraphQL) clients = this.clients.map((client) => client.graphql);
-      else if (isCodeSearch) clients = this.clients.map((client) => client.code_search);
-      else if (isSearch) clients = this.clients.map((client) => client.search);
-      else clients = this.clients.map((client) => client.core);
+    if (isGraphQL) {
+      resourceType = 'graphql';
+      clients = this.workersByResource.graphql;
+    } else if (isCodeSearch) {
+      resourceType = 'code_search';
+      clients = this.workersByResource.code_search;
+    } else if (isSearch) {
+      resourceType = 'search';
+      clients = this.workersByResource.search;
+    } else {
+      resourceType = 'core';
+      clients = this.workersByResource.core;
+    }
 
-      const available = clients.filter(
-        (client) =>
-          client.remaining > (isSearch ? 1 : this.options.minRemaining) ||
-          client.reset * 1000 < Date.now()
+    const available = clients.filter(
+      (client) =>
+        client.remaining > (isSearch ? 1 : this.options.minRemaining) ||
+        client.reset * 1000 < Date.now()
+    );
+
+    if (available.length === 0) {
+      const resetAt = Math.min(...clients.map((c) => c.reset)) * 1000;
+
+      this.emit(
+        'warn',
+        `There is no client available. Retrying at ${dayjs(resetAt).format('HH:mm:ss')}.`
       );
 
-      if (available.length === 0) {
-        const resetAt = Math.min(...clients.map((c) => c.reset)) * 1000;
+      return setTimeout(Math.max(0, resetAt - Date.now()) + 1000).then(() => {
+        this.schedule(req, res);
+      });
+    }
 
-        this.emit(
-          'warn',
-          `There is no client available. Retrying at ${dayjs(resetAt).format('HH:mm:ss')}.`
-        );
+    // Hybrid push-pull: Try immediate assignment to best available worker
+    const worker = this.selectBestWorker(available);
+    if (worker && worker.canAcceptWork()) {
+      // Direct assignment - skip queue for immediate processing
+      await worker.schedule(req, res);
+    } else {
+      // No worker available - enqueue and notify
+      const queue = this.queues[resourceType];
+      queue.enqueue(req, res);
+      this.emit(`work-available:${resourceType}`);
+    }
+  }
 
-        return setTimeout(Math.max(0, resetAt - Date.now()) + 1000).then(() => {
-          this.schedule(req, res);
-        });
-      }
-
-      // Select the client with the best score (fewest pending and most remaining)
-      const client = minBy(available, (client) => {
-        const requestScore = client.pending + 1 / (client.remaining + 1);
-        const timeScore = 1 / (client.timeBudget / 1000 + 1);
-        return requestScore + timeScore;
-      }) as ProxyWorker;
-
-      client.schedule(req, res);
+  private selectBestWorker(workers: ProxyWorker[]): ProxyWorker | undefined {
+    return minBy(workers, (client) => {
+      const remainingScore = 1 / (client.remaining + 1);
+      const timeScore = 1 / (client.timeBudget / 1000 + 1);
+      return remainingScore + timeScore;
     });
+  }
+
+  getQueue(resource: APIResources): RequestQueue {
+    return this.queues[resource];
   }
 
   addToken(token: string): void {
@@ -382,16 +484,41 @@ export default class ProxyRouter extends EventEmitter {
       worker.refreshRateLimits().then(() => this.emit('ready'));
       // Auto-refresh rate limits every 15 minutes
       setInterval(() => worker.refreshRateLimits(), 15 * 60 * 1000).unref();
+      // Phase 3: Set router reference to enable pull mechanism
+      worker.setRouter(this);
     }
 
     this.clients.push({ token, core, search, code_search: codeSearch, graphql });
+
+    // Update worker caches
+    this.workersByResource.core.push(core);
+    this.workersByResource.search.push(search);
+    this.workersByResource.code_search.push(codeSearch);
+    this.workersByResource.graphql.push(graphql);
   }
 
   removeToken(token: string): void {
-    this.clients.splice(this.clients.map((c) => c.token).indexOf(token), 1).forEach((client) => {
+    const index = this.clients.map((c) => c.token).indexOf(token);
+    if (index === -1) return;
+
+    const removed = this.clients.splice(index, 1);
+    removed.forEach((client) => {
       for (const worker of [client.core, client.search, client.code_search, client.graphql]) {
         worker.destroy();
       }
+
+      // Update worker caches
+      const coreIndex = this.workersByResource.core.indexOf(client.core);
+      if (coreIndex !== -1) this.workersByResource.core.splice(coreIndex, 1);
+
+      const searchIndex = this.workersByResource.search.indexOf(client.search);
+      if (searchIndex !== -1) this.workersByResource.search.splice(searchIndex, 1);
+
+      const codeSearchIndex = this.workersByResource.code_search.indexOf(client.code_search);
+      if (codeSearchIndex !== -1) this.workersByResource.code_search.splice(codeSearchIndex, 1);
+
+      const graphqlIndex = this.workersByResource.graphql.indexOf(client.graphql);
+      if (graphqlIndex !== -1) this.workersByResource.graphql.splice(graphqlIndex, 1);
     });
   }
 
