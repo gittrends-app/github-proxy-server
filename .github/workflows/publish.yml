@@ -57,13 +57,13 @@ jobs:
 
           SEMVER="${TAG#v}"
           IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
-          MINOR_TAG="v${MAJOR}.${MINOR}"
-          MAJOR_TAG="v${MAJOR}"
+          MINOR_TAG="${MAJOR}.${MINOR}"
+          MAJOR_TAG="${MAJOR}"
 
           IMAGE="ghcr.io/${{ github.repository }}"
 
           echo "TAGS<<EOF" >>"$GITHUB_OUTPUT"
-          echo "${IMAGE,,}:${TAG}" >>"$GITHUB_OUTPUT"
+          echo "${IMAGE,,}:${SEMVER}" >>"$GITHUB_OUTPUT"
           echo "${IMAGE,,}:${MINOR_TAG}" >>"$GITHUB_OUTPUT"
           echo "${IMAGE,,}:${MAJOR_TAG}" >>"$GITHUB_OUTPUT"
           echo "${IMAGE,,}:latest" >>"$GITHUB_OUTPUT"
