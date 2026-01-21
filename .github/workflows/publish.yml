@@ -60,12 +60,13 @@ jobs:
           MINOR_TAG="v${MAJOR}.${MINOR}"
           MAJOR_TAG="v${MAJOR}"
 
-          echo "IMAGE=ghcr.io/${{ github.repository }}" >>"$GITHUB_OUTPUT"
+          IMAGE="ghcr.io/${{ github.repository }}"
+
           echo "TAGS<<EOF" >>"$GITHUB_OUTPUT"
-          echo "$TAG" >>"$GITHUB_OUTPUT"
-          echo "$MINOR_TAG" >>"$GITHUB_OUTPUT"
-          echo "$MAJOR_TAG" >>"$GITHUB_OUTPUT"
-          echo "latest" >>"$GITHUB_OUTPUT"
+          echo "${IMAGE,,}:${TAG}" >>"$GITHUB_OUTPUT"
+          echo "${IMAGE,,}:${MINOR_TAG}" >>"$GITHUB_OUTPUT"
+          echo "${IMAGE,,}:${MAJOR_TAG}" >>"$GITHUB_OUTPUT"
+          echo "${IMAGE,,}:latest" >>"$GITHUB_OUTPUT"
           echo "EOF" >>"$GITHUB_OUTPUT"
 
       - name: Build and push
@@ -75,4 +76,4 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.IMAGE }}:${{ steps.meta.outputs.TAGS }}
+          tags: ${{ steps.meta.outputs.TAGS }}
