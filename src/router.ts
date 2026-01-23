@@ -101,8 +101,8 @@ class ProxyWorker extends EventEmitter {
       target: 'https://api.github.com',
       timeout: opts.requestTimeout,
       dispatcher: new Agent({
-        connections: 100,
-        pipelining: 10,
+        connections: 20,
+        pipelining: 1,
         keepAliveTimeout: 60000,
         keepAliveMaxTimeout: 600000,
         headersTimeout: opts.requestTimeout,
@@ -159,7 +159,6 @@ class ProxyWorker extends EventEmitter {
                 const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
                 const rateLimitReset = data.headers['x-ratelimit-reset'];
                 const rateLimitLimit = data.headers['x-ratelimit-limit'];
-                const rateLimitUsed = data.headers['x-ratelimit-used'];
 
                 if (rateLimitRemaining) {
                   this.updateLimits({
@@ -170,16 +169,7 @@ class ProxyWorker extends EventEmitter {
                   });
                 }
 
-                // Prefer x-ratelimit-used header, fallback to measured duration
-                if (rateLimitUsed) {
-                  const usedTime = Number.parseFloat(rateLimitUsed);
-                  if (!Number.isNaN(usedTime)) {
-                    this.timeBudget -= usedTime;
-                  }
-                } else if (req.startedAt) {
-                  const requestDuration = Date.now() - req.startedAt.getTime();
-                  this.timeBudget -= requestDuration;
-                }
+                this.timeBudget -= Date.now() - (req.startedAt?.getTime() || 1000);
 
                 this.log(data.status, req.startedAt);
 
