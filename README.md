@@ -109,18 +109,19 @@ To more usage information, use the option `--help`.
 Usage: index [options]
 
 Options:
-  -p, --port [port]            Port to start the proxy server (default: 3000, env: PORT)
-  -t, --token [token]          GitHub token to be used (default: [])
-  --tokens [file]              File containing a list of tokens (env: GPS_TOKENS_FILE)
-  --request-timeout [timeout]  Request timeout (ms) (default: 30000, env: GPS_REQUEST_TIMEOUT)
-  --min-remaining <number>     Stop using token on a minimum of (default: 100, env: GPS_MIN_REMAINING)
-  --silent                     Dont show requests outputs
-  --no-override-authorization  By default, the authorization header is overrided with a configured token
-  --auth-username [username]   Proxy authentication username (env: GPS_AUTH_USERNAME)
-  --auth-password [password]   Proxy authentication password (env: GPS_AUTH_PASSWORD)
-  --no-status-monitor          Disable requests monitoring on /status
-  -v, --version                output the current version
-  -h, --help                   display help for command
+  -p, --port [port]                           Port to start the proxy server (default: 3000, env: PORT)
+  -t, --token [token]                         GitHub token to be used (default: [])
+  --tokens [file]                             File containing a list of tokens (env: GPS_TOKENS_FILE)
+  --request-timeout [timeout]                 Request timeout (ms) (default: 30000, env: GPS_REQUEST_TIMEOUT)
+  --min-remaining <number>                    Stop using token on a minimum of (default: 100, env: GPS_MIN_REMAINING)
+  --time-budget-multiplier [multiplier]       Time budget multiplier (>= 1.0) (default: 1, env: GPS_TIME_BUDGET_MULTIPLIER)
+  --silent                                    Dont show requests outputs (env: GPS_SILENT)
+  --no-override-authorization                 By default, the authorization header is overrided with a configured token
+  --auth-username [username]                  Proxy authentication username (env: GPS_AUTH_USERNAME)
+  --auth-password [password]                  Proxy authentication password (env: GPS_AUTH_PASSWORD)
+  --no-status-monitor                         Disable requests monitoring on /status
+  -v, --version                               output the current version
+  -h, --help                                  display help for command
 ```
 
 ## Limitations
