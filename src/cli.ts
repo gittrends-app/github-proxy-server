@@ -15,6 +15,14 @@ import omitBy from 'lodash/omitBy.js';
 import packageJson from '../package.json' with { type: 'json' };
 import { type CliOpts, concatTokens, createProxyServer, readTokensFile } from './server.js';
 
+function parseTimeBudgetMultiplier(value: string): number {
+  const num = Number(value);
+  if (isNaN(num) || num < 1) {
+    throw new Error('Time budget multiplier must be >= 1.0 (use 1.0 for 100%, 1.5 for 150%, etc.)');
+  }
+  return num;
+}
+
 export function createCli(): Command {
   const program = new Command();
 
@@ -46,6 +54,12 @@ export function createCli(): Command {
         .argParser(Number)
         .default(100)
         .env('GPS_MIN_REMAINING')
+    )
+    .addOption(
+      new Option('--time-budget-multiplier [multiplier]', 'Time budget multiplier (>= 1.0)')
+        .argParser(parseTimeBudgetMultiplier)
+        .default(1)
+        .env('GPS_TIME_BUDGET_MULTIPLIER')
     )
     .addOption(new Option('--silent', 'Dont show requests outputs'))
     .addOption(
@@ -86,6 +100,7 @@ export function createCli(): Command {
         overrideAuthorization: options.overrideAuthorization,
         tokens: tokens,
         minRemaining: options.minRemaining,
+        timeBudgetMultiplier: options.timeBudgetMultiplier,
         statusMonitor: options.statusMonitor,
         auth:
           options.authUsername && options.authPassword

@@ -1,8 +1,6 @@
 /* Author: Hudson S. Borges */
 import EventEmitter from 'node:events';
-import { setTimeout } from 'node:timers/promises';
 
-import dayjs from 'dayjs';
 import type { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import PQueue from 'p-queue';
@@ -14,6 +12,7 @@ export type ProxyRouterOpts = {
   requestTimeout: number;
   minRemaining: number;
   overrideAuthorization?: boolean;
+  timeBudgetMultiplier?: number;
 };
 
 type ExtendedRequest = Request & {
@@ -64,14 +63,12 @@ class ProxyWorker extends EventEmitter {
     resource: APIResources;
     limit: number;
     reset: number;
+    timeBudget: number;
   };
 
   remaining = 0;
   reset: number = Date.now() / 1000 + 1;
-
-  // Secondary rate limiting: GraphQL 60s, Others 90s per 60s window
-  timeBudget: number;
-  private _budgetResetAt: number;
+  timeBudget: number = 60000;
 
   constructor(token: string, opts: ProxyRouterOpts & { resource: APIResources }) {
     super({});
@@ -79,23 +76,27 @@ class ProxyWorker extends EventEmitter {
     this.token = token;
     this.opts = opts;
 
-    // GraphQL: 60s per 60s window, Others: 90s per 60s window (in milliseconds)
-    this.timeBudget = opts.resource === 'graphql' ? 60000 : 90000;
-    this._budgetResetAt = Date.now() + 60000;
-
-    // Auto-reset time budget every 60 seconds
-    this._budgetResetInterval = setInterval(() => this.resetTimeBudget(), 60000).unref();
-
     switch (opts.resource) {
       case 'code_search':
-        this.defaults = { resource: opts.resource, limit: 10, reset: 1000 * 60 };
+        this.defaults = { resource: opts.resource, limit: 10, reset: 1000 * 60, timeBudget: 90000 };
         break;
       case 'search':
-        this.defaults = { resource: opts.resource, limit: 30, reset: 1000 * 60 };
+        this.defaults = { resource: opts.resource, limit: 30, reset: 1000 * 60, timeBudget: 90000 };
         break;
       default:
-        this.defaults = { resource: opts.resource, limit: 5000, reset: 1000 * 60 * 60 };
+        this.defaults = {
+          resource: opts.resource,
+          limit: 5000,
+          reset: 1000 * 60 * 60,
+          timeBudget: opts.resource === 'graphql' ? 60000 : 90000
+        };
     }
+
+    // Initialize time budget tracking
+    this._budgetResetInterval = setInterval(() => {
+      this.timeBudget =
+        (this.defaults.resource === 'graphql' ? 60000 : 90000) * (opts.timeBudgetMultiplier || 1);
+    }, 60000).unref();
 
     this.proxy = new ProxyClient({
       target: 'https://api.github.com',
@@ -118,18 +119,15 @@ class ProxyWorker extends EventEmitter {
     this.schedule = async (req: ExtendedRequest, res: Response): Promise<void> => {
       return this.queue.add(async () => {
         try {
-          // Secondary rate limit check (time budget per resource)
-          // Safety margin (estimated 500ms per request)
-          if (this.timeBudget < this.queue.pending * 1000) {
-            const waitTime = this._budgetResetAt - Date.now();
-            if (waitTime > 0) await setTimeout(waitTime);
-          }
-
           if (req.socket.destroyed) {
-            return this.log();
+            this.log();
+            return;
           }
 
-          if (this.remaining <= opts.minRemaining && this.reset > Date.now() / 1000) {
+          const noTimeBudget = this.timeBudget < this.queue.pending * 1000;
+          const noRequests = this.remaining <= opts.minRemaining && this.reset > Date.now() / 1000;
+
+          if (noTimeBudget || noRequests) {
             this.emit('retry', req, res);
             return;
           }
@@ -245,15 +243,6 @@ class ProxyWorker extends EventEmitter {
       this.remaining = Number.parseInt(headers['x-ratelimit-remaining'], 10) - this.queue.pending;
       this.reset = Number.parseInt(headers['x-ratelimit-reset'], 10);
     }
-  }
-
-  /**
-   * Reset the time budget window
-   * Called automatically every 60 seconds by interval timer
-   */
-  private resetTimeBudget(): void {
-    this.timeBudget = this.defaults.resource === 'graphql' ? 60000 : 90000;
-    this._budgetResetAt = Date.now() + 60000;
   }
 
   private log(status?: number | string, startedAt?: Date): void {
@@ -395,44 +384,19 @@ export default class ProxyRouter extends EventEmitter {
     const isCodeSearch = req.path.startsWith('/search/code');
     const isSearch = req.path.startsWith('/search');
 
-    let resourceType: APIResources;
-    let clients: ProxyWorker[];
-
     if (isGraphQL) {
-      resourceType = 'graphql';
-      clients = this.workersByResource.graphql;
+      this.queues['graphql'].enqueue(req, res);
+      this.emit(`work-available:graphql`);
     } else if (isCodeSearch) {
-      resourceType = 'code_search';
-      clients = this.workersByResource.code_search;
+      this.queues['code_search'].enqueue(req, res);
+      this.emit(`work-available:code_search`);
     } else if (isSearch) {
-      resourceType = 'search';
-      clients = this.workersByResource.search;
+      this.queues['search'].enqueue(req, res);
+      this.emit(`work-available:search`);
     } else {
-      resourceType = 'core';
-      clients = this.workersByResource.core;
+      this.queues['core'].enqueue(req, res);
+      this.emit(`work-available:core`);
     }
-
-    const available = clients.filter(
-      (client) =>
-        client.remaining > (isSearch ? 1 : this.options.minRemaining) ||
-        client.reset * 1000 < Date.now()
-    );
-
-    if (available.length === 0) {
-      const resetAt = Math.min(...clients.map((c) => c.reset)) * 1000;
-
-      this.emit(
-        'warn',
-        `There is no client available. Retrying at ${dayjs(resetAt).format('HH:mm:ss')}.`
-      );
-
-      return setTimeout(Math.max(0, resetAt - Date.now()) + 1000).then(() => {
-        this.schedule(req, res);
-      });
-    }
-
-    this.queues[resourceType].enqueue(req, res);
-    this.emit(`work-available:${resourceType}`);
   }
 
   getQueue(resource: APIResources): RequestQueue {
