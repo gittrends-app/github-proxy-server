@@ -61,7 +61,7 @@ export function createCli(): Command {
         .default(1)
         .env('GPS_TIME_BUDGET_MULTIPLIER')
     )
-    .addOption(new Option('--silent', 'Dont show requests outputs'))
+    .addOption(new Option('--silent', 'Dont show requests outputs').env('GPS_SILENT'))
     .addOption(
       new Option(
         '--no-override-authorization',
