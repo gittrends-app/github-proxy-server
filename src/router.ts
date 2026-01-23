@@ -125,7 +125,8 @@ class ProxyWorker extends EventEmitter {
           }
 
           const noTimeBudget = this.timeBudget < this.queue.pending * 1000;
-          const noRequests = this.remaining <= opts.minRemaining && this.reset > Date.now() / 1000;
+          const noRequests =
+            this.remaining <= opts.minRemaining && this.reset >= Math.floor(Date.now() / 1000);
 
           if (noTimeBudget || noRequests) {
             this.emit('retry', req, res);
@@ -277,21 +278,12 @@ class ProxyWorker extends EventEmitter {
 
     this.checkForWork = async () => {
       if (!this.canAcceptWork() || !this.resourceQueue) return;
-
-      // Direct queue access - no router intermediary
       const work = this.resourceQueue.dequeue();
-
-      if (work) {
-        await this.schedule(work.req, work.res);
-      }
+      if (work) await this.schedule(work.req, work.res);
     };
 
-    // Event-driven: router notifies when work available
-    this.router.on(`work-available:${this.defaults.resource}`, this.checkForWork);
-
     // Fallback polling every 100ms for missed events
-    this.pullInterval = setInterval(this.checkForWork, 100);
-    this.pullInterval.unref();
+    this.pullInterval = setInterval(this.checkForWork, 100).unref();
   }
 
   destroy(): this {
@@ -301,9 +293,6 @@ class ProxyWorker extends EventEmitter {
     }
     if (this._budgetResetInterval) {
       clearInterval(this._budgetResetInterval);
-    }
-    if (this.router && this.checkForWork) {
-      this.router.removeListener(`work-available:${this.defaults.resource}`, this.checkForWork);
     }
     return this;
   }
@@ -384,19 +373,15 @@ export default class ProxyRouter extends EventEmitter {
     const isCodeSearch = req.path.startsWith('/search/code');
     const isSearch = req.path.startsWith('/search');
 
-    if (isGraphQL) {
-      this.queues['graphql'].enqueue(req, res);
-      this.emit(`work-available:graphql`);
-    } else if (isCodeSearch) {
-      this.queues['code_search'].enqueue(req, res);
-      this.emit(`work-available:code_search`);
-    } else if (isSearch) {
-      this.queues['search'].enqueue(req, res);
-      this.emit(`work-available:search`);
-    } else {
-      this.queues['core'].enqueue(req, res);
-      this.emit(`work-available:core`);
-    }
+    const queue = isGraphQL
+      ? this.queues['graphql']
+      : isCodeSearch
+        ? this.queues['code_search']
+        : isSearch
+          ? this.queues['search']
+          : this.queues['core'];
+
+    queue.enqueue(req, res);
   }
 
   getQueue(resource: APIResources): RequestQueue {

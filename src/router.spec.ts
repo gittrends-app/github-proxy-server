@@ -129,23 +129,22 @@ describe('Middleware core', () => {
     });
 
     test('it should wait if no requests available', async () => {
-      const waitInterval = 1000; // must be greather or equal to 1
+      const reset = Date.now() + 1000; // must be greather or equal to 1
 
       scope
         .get('/reset')
         .reply(StatusCodes.OK, '', {
           'x-ratelimit-remaining': '0',
           'x-ratelimit-limit': '5000',
-          'x-ratelimit-reset': `${Math.floor((Date.now() + waitInterval) / 1000)}`
+          'x-ratelimit-reset': `${Math.floor(reset / 1000)}`
         })
         .get('/')
         .reply(StatusCodes.OK);
 
       await request(app).get('/reset').expect(StatusCodes.OK);
 
-      const startedAt = Date.now();
       await request(app).get('/').expect(StatusCodes.OK);
-      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(waitInterval);
+      expect(Date.now()).toBeGreaterThanOrEqual(reset);
     });
 
     test('it should forward responses received from GitHub', async () => {
