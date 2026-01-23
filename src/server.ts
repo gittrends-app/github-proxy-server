@@ -167,10 +167,10 @@ export function createProxyServer(options: CliOpts): Express {
   });
 
   proxy.on('error', (message) => app.emit('error', message));
+  proxy.on('warn', (message) => app.emit('warn', message));
 
   if (!options.silent) {
     proxy.on('log', (data) => app.emit('log', logTransform(data)));
-    proxy.on('warn', (message) => app.emit('warn', message));
   }
 
   function notSupported(req: Request, res: Response) {
