@@ -118,7 +118,7 @@ describe('ProxyClient', () => {
 
       expect(receivedHeaders['x-forwarded-for']).toBeDefined();
       expect(receivedHeaders['x-forwarded-proto']).toBeDefined();
-      expect(receivedHeaders['x-forwarded-host']).toBeDefined();
+      expect(receivedHeaders['x-forwarded-host']).toBe('localhost:3000');
     });
 
     test('should modify headers via modifyHeaders callback', async () => {

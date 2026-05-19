@@ -52,6 +52,7 @@ export class ProxyClient {
           headers[key] = Array.isArray(value) ? value.join(', ') : value;
         }
       }
+      const host = headers.host || '';
 
       // Remove host header to avoid conflicts
       delete headers.host;
@@ -63,7 +64,7 @@ export class ProxyClient {
       const forwarded = headers['x-forwarded-for'] || req.socket.remoteAddress || '';
       modifiedHeaders['x-forwarded-for'] = forwarded;
       modifiedHeaders['x-forwarded-proto'] = 'https' in req.socket ? 'https' : 'http';
-      modifiedHeaders['x-forwarded-host'] = headers.host || '';
+      modifiedHeaders['x-forwarded-host'] = host;
 
       // Prepare request body if present
       let body: Buffer | undefined;
