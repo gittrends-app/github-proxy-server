@@ -1,3 +1,5 @@
+import EventEmitter from 'node:events';
+
 import express, { type Express, type Request, type Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import repeat from 'lodash/repeat.js';
@@ -210,6 +212,191 @@ describe('Middleware constructor and methods', () => {
     } finally {
       await middleware.destroy();
       fetch.mockRestore();
+    }
+  });
+
+  test('should not write or destroy an already-completed response after a proxy error', async () => {
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: { proxy: (...args: never[]) => Promise<void> };
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const { req, res, send, status, destroy } = createStateAwareRequestResponse({
+      headersSent: true,
+      writableEnded: true,
+      destroyed: false
+    });
+    const proxy = vi.spyOn(worker.proxy, 'proxy').mockRejectedValue(new Error('upstream failed'));
+
+    try {
+      await worker.schedule(req, res);
+      expect(status).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      expect(destroy).not.toHaveBeenCalled();
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
+  test('should destroy a connected partial response without sending a duplicate error', async () => {
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: { proxy: (...args: never[]) => Promise<void> };
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const { req, res, send, status, destroy } = createStateAwareRequestResponse({
+      headersSent: true,
+      writableEnded: false,
+      destroyed: false
+    });
+    const proxy = vi.spyOn(worker.proxy, 'proxy').mockRejectedValue(new Error('upstream failed'));
+
+    try {
+      await worker.schedule(req, res);
+      expect(status).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      expect(destroy).toHaveBeenCalledTimes(1);
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
+  test('should propagate request cancellation to the active upstream operation', async () => {
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: {
+              proxy: (
+                req: Request,
+                res: Response,
+                options?: { abortController?: AbortController }
+              ) => Promise<void>;
+            };
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const { req, res, status, destroy } = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    let signal: AbortSignal | undefined;
+    let started!: () => void;
+    const operationStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const proxy = vi.spyOn(worker.proxy, 'proxy').mockImplementation((_req, _res, options) => {
+      signal = options?.abortController?.signal;
+      started();
+      return new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('The operation was aborted', 'AbortError')),
+          { once: true }
+        );
+      });
+    });
+
+    try {
+      const scheduled = worker.schedule(req, res);
+      await operationStarted;
+      req.aborted = true;
+      req.emit('aborted');
+      await scheduled;
+      expect(signal?.aborted).toBe(true);
+      expect(status).not.toHaveBeenCalled();
+      expect(destroy).not.toHaveBeenCalled();
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
+  test('should abort the active proxy before settling a destroyed worker task', async () => {
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: {
+              proxy: (
+                req: Request,
+                res: Response,
+                options?: { abortController?: AbortController }
+              ) => Promise<void>;
+            };
+            schedule: (req: Request, res: Response) => Promise<void>;
+            destroy: () => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const { req, res, status, send } = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    let signal: AbortSignal | undefined;
+    let started!: () => void;
+    const operationStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const proxy = vi.spyOn(worker.proxy, 'proxy').mockImplementation((_req, _res, options) => {
+      signal = options?.abortController?.signal;
+      started();
+      return new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('The operation was aborted', 'AbortError')),
+          { once: true }
+        );
+      });
+    });
+
+    try {
+      const scheduled = worker.schedule(req, res);
+      await operationStarted;
+      await Promise.all([scheduled, worker.destroy()]);
+      expect(signal?.aborted).toBe(true);
+      expect(status).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
     }
   });
 });
@@ -435,6 +622,38 @@ describe('Rate-limit refresh policy', () => {
     }
   });
 });
+
+function createStateAwareRequestResponse(state: {
+  headersSent: boolean;
+  writableEnded: boolean;
+  destroyed: boolean;
+}): {
+  req: Request & { aborted: boolean };
+  res: Response;
+  send: ReturnType<typeof vi.fn>;
+  status: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+} {
+  const socket = Object.assign(new EventEmitter(), { destroyed: false });
+  const req = Object.assign(new EventEmitter(), {
+    method: 'GET',
+    url: '/',
+    headers: { host: 'localhost:3000' },
+    socket,
+    aborted: false,
+    destroyed: false
+  }) as unknown as Request & { aborted: boolean };
+  const send = vi.fn();
+  const status = vi.fn(() => ({ send }));
+  const destroy = vi.fn();
+  const res = Object.assign(new EventEmitter(), {
+    ...state,
+    status,
+    destroy
+  }) as unknown as Response;
+
+  return { req, res, send, status, destroy };
+}
 
 describe('Middleware core', () => {
   let scope: nock.Scope;

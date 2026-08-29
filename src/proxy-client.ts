@@ -31,6 +31,7 @@ export class ProxyClient {
     res: ServerResponse,
     options?: {
       modifyHeaders?: (headers: Record<string, string>) => Record<string, string>;
+      abortController?: AbortController;
       onResponse?: (data: {
         status: number;
         statusText: string;
@@ -38,7 +39,7 @@ export class ProxyClient {
       }) => void | Promise<void>;
     }
   ): Promise<void> {
-    const controller = new AbortController();
+    const controller = options?.abortController ?? new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
@@ -71,7 +72,7 @@ export class ProxyClient {
       // Prepare request body if present
       let body: Buffer | undefined;
       if (req.method !== 'GET' && req.method !== 'HEAD') {
-        body = await this.readRequestBody(req);
+        body = await this.readRequestBody(req, controller.signal);
       }
 
       // Make the fetch request
@@ -94,6 +95,7 @@ export class ProxyClient {
 
       // Call onResponse callback if provided (with mutable headers)
       if (options?.onResponse) {
+        if (!this.canMutateResponse(res, controller.signal)) return;
         await options.onResponse({
           status: response.status,
           statusText: response.statusText,
@@ -106,33 +108,63 @@ export class ProxyClient {
       delete responseHeaders['content-encoding'];
       delete responseHeaders['content-length']; // Also remove as length changes after decompression
 
+      if (!this.canMutateResponse(res, controller.signal)) return;
+
       // Copy response status
       res.statusCode = response.status;
+      if (!this.canMutateResponse(res, controller.signal)) return;
       res.statusMessage = response.statusText;
 
       // Copy modified response headers
       for (const [key, value] of Object.entries(responseHeaders)) {
+        if (!this.canMutateResponse(res, controller.signal)) return;
         res.setHeader(key, value);
       }
 
       // Stream response body
       if (response.body) {
+        if (!this.canWriteResponse(res, controller.signal)) return;
         const reader = response.body.getReader();
         try {
           while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+            if (!this.canWriteResponse(res, controller.signal)) {
+              void reader.cancel().catch(() => undefined);
+              return;
+            }
+            const { done, value } = await this.awaitAbort(reader.read(), controller.signal);
+            if (done) {
+              if (this.canWriteResponse(res, controller.signal)) res.end();
+              return;
+            }
+            if (!this.canWriteResponse(res, controller.signal)) {
+              void reader.cancel().catch(() => undefined);
+              return;
+            }
             if (!res.write(value)) {
               // Backpressure: wait for drain event
-              await new Promise((resolve) => res.once('drain', resolve));
+              if (!this.canWriteResponse(res, controller.signal)) {
+                void reader.cancel().catch(() => undefined);
+                return;
+              }
+              const drained = await this.waitForDrain(res, controller.signal);
+              if (!drained) {
+                void reader.cancel().catch(() => undefined);
+                return;
+              }
             }
           }
-          res.end();
         } catch (error) {
-          reader.releaseLock();
+          void reader.cancel().catch(() => undefined);
           throw error;
+        } finally {
+          try {
+            reader.releaseLock();
+          } catch {
+            // The reader may already be released by the underlying stream.
+          }
         }
       } else {
+        if (!this.canWriteResponse(res, controller.signal)) return;
         res.end();
       }
     } catch (error) {
@@ -152,12 +184,101 @@ export class ProxyClient {
   /**
    * Read the full request body into a buffer
    */
-  private readRequestBody(req: IncomingMessage): Promise<Buffer> {
+  private readRequestBody(req: IncomingMessage, signal: AbortSignal): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
-      req.on('data', (chunk) => chunks.push(chunk));
-      req.on('end', () => resolve(Buffer.concat(chunks)));
-      req.on('error', reject);
+      const cleanup = (): void => {
+        req.removeListener?.('data', onData);
+        req.removeListener?.('end', onEnd);
+        req.removeListener?.('error', onError);
+        signal.removeEventListener('abort', onAbort);
+      };
+      const onData = (chunk: Buffer): void => {
+        chunks.push(chunk);
+      };
+      const onEnd = (): void => {
+        cleanup();
+        resolve(Buffer.concat(chunks));
+      };
+      const onError = (error: Error): void => {
+        cleanup();
+        reject(error);
+      };
+      const onAbort = (): void => {
+        cleanup();
+        reject(new DOMException('The operation was aborted', 'AbortError'));
+      };
+
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+
+      req.on('data', onData);
+      req.on('end', onEnd);
+      req.on('error', onError);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  private async awaitAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+
+    let abort: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      abort = () => reject(new DOMException('The operation was aborted', 'AbortError'));
+      signal.addEventListener('abort', abort, { once: true });
+    });
+
+    try {
+      return await Promise.race([operation, aborted]);
+    } finally {
+      if (abort) signal.removeEventListener('abort', abort);
+    }
+  }
+
+  private canWriteResponse(res: ServerResponse, signal: AbortSignal): boolean {
+    if (signal.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+    return !res.destroyed && !res.writableEnded;
+  }
+
+  private canMutateResponse(res: ServerResponse, signal: AbortSignal): boolean {
+    return this.canWriteResponse(res, signal) && !res.headersSent;
+  }
+
+  private waitForDrain(res: ServerResponse, signal: AbortSignal): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      const cleanup = (): void => {
+        res.removeListener?.('drain', onDrain);
+        res.removeListener?.('close', onClose);
+        signal.removeEventListener('abort', onAbort);
+      };
+      const onDrain = (): void => {
+        cleanup();
+        resolve(true);
+      };
+      const onClose = (): void => {
+        cleanup();
+        resolve(false);
+      };
+      const onAbort = (): void => {
+        cleanup();
+        reject(new DOMException('The operation was aborted', 'AbortError'));
+      };
+
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+
+      if (res.destroyed || res.writableEnded) {
+        resolve(false);
+        return;
+      }
+
+      res.once('drain', onDrain);
+      res.once('close', onClose);
+      signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 }

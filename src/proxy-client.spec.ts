@@ -297,6 +297,120 @@ describe('ProxyClient', () => {
       });
     });
 
+    test('should cancel an active upstream request with the caller controller', async () => {
+      const controller = new AbortController();
+      scope
+        .get('/cancel')
+        .delay(TIMEOUT * 2)
+        .reply(StatusCodes.OK);
+
+      const { req, res } = createMockRequestResponse('GET', '/cancel');
+      const proxy = client.proxy(req, res, { abortController: controller });
+      controller.abort();
+
+      await expect(proxy).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    });
+
+    test('should not mutate the response after cancellation during onResponse', async () => {
+      const controller = new AbortController();
+      let releaseResponse!: () => void;
+      const responseHandling = new Promise<void>((resolve) => {
+        releaseResponse = resolve;
+      });
+      let onResponseStarted!: () => void;
+      const responseStarted = new Promise<void>((resolve) => {
+        onResponseStarted = resolve;
+      });
+      scope.get('/cancel-on-response').reply(StatusCodes.OK);
+
+      const { req, res } = createMockRequestResponse('GET', '/cancel-on-response');
+      const proxy = client.proxy(req, res, {
+        abortController: controller,
+        onResponse: async () => {
+          onResponseStarted();
+          await responseHandling;
+        }
+      });
+
+      await responseStarted;
+      controller.abort();
+      releaseResponse();
+
+      await expect(proxy).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      expect(res.statusCode).toBe(0);
+      expect(res.writableFinished).toBe(false);
+    });
+
+    test('should stop streamed writes after downstream cancellation', async () => {
+      const controller = new AbortController();
+      const read = vi.fn(() => new Promise<ReadableStreamReadResult<Uint8Array>>(() => undefined));
+      const cancel = vi.fn().mockResolvedValue(undefined);
+      const releaseLock = vi.fn();
+      const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        status: StatusCodes.OK,
+        statusText: 'OK',
+        headers: new Headers(),
+        body: { getReader: () => ({ read, cancel, releaseLock }) }
+      } as unknown as globalThis.Response);
+      const { req, res } = createMockRequestResponse('GET', '/stream-cancel');
+
+      try {
+        const proxy = client.proxy(req, res, { abortController: controller });
+        await vi.waitFor(() => expect(read).toHaveBeenCalled());
+        controller.abort();
+
+        await expect(proxy).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+        expect(res.writableFinished).toBe(false);
+        expect(res.write).not.toHaveBeenCalled();
+        expect(cancel).toHaveBeenCalled();
+        expect(releaseLock).toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    });
+
+    test('should remove drain listeners when backpressure is cancelled', async () => {
+      const controller = new AbortController();
+      let drain!: () => void;
+      const read = vi
+        .fn()
+        .mockResolvedValueOnce({ done: false, value: new Uint8Array([1]) })
+        .mockImplementation(
+          () => new Promise<ReadableStreamReadResult<Uint8Array>>(() => undefined)
+        );
+      const cancel = vi.fn().mockResolvedValue(undefined);
+      const releaseLock = vi.fn();
+      const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        status: StatusCodes.OK,
+        statusText: 'OK',
+        headers: new Headers(),
+        body: { getReader: () => ({ read, cancel, releaseLock }) }
+      } as unknown as globalThis.Response);
+      const { req, res } = createMockRequestResponse('GET', '/backpressure-cancel');
+      const removeListener = vi.fn();
+      res.write = vi.fn(() => false);
+      res.once = vi.fn((event: string, callback: () => void) => {
+        if (event === 'drain') drain = callback;
+        return res;
+      });
+      res.removeListener = removeListener;
+
+      try {
+        const proxy = client.proxy(req, res, { abortController: controller });
+        await vi.waitFor(() => expect(drain).toBeTypeOf('function'));
+        controller.abort();
+
+        await expect(proxy).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+        expect(res.writableFinished).toBe(false);
+        expect(removeListener).toHaveBeenCalledWith('drain', drain);
+        expect(removeListener).toHaveBeenCalledWith('close', expect.any(Function));
+        expect(cancel).toHaveBeenCalled();
+        expect(releaseLock).toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    });
+
     test('should handle network errors', async () => {
       scope.get('/error').replyWithError(new Error('Network error'));
 

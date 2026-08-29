@@ -136,7 +136,8 @@ export function validateGitHubToken(token: unknown): asserts token is string {
   }
 }
 
-type ScheduledRequest = QueuedRequest & {
+type ScheduledRequest = Omit<QueuedRequest, 'req'> & {
+  req: ExtendedRequest;
   settle: () => void;
 };
 
@@ -150,6 +151,19 @@ function disposalError(errors: unknown[], message: string): Error | undefined {
 
 function terminateResponse(res: Response): void {
   if (!res.writableEnded && !res.destroyed) res.destroy();
+}
+
+function requestDisconnected(req: ExtendedRequest): boolean {
+  return Boolean(req.destroyed || req.aborted || req.socket?.destroyed);
+}
+
+function responseUnavailable(res: Response): boolean {
+  return Boolean(res.headersSent || res.writableEnded || res.destroyed);
+}
+
+function terminatePartialResponse(req: ExtendedRequest, res: Response): void {
+  if (requestDisconnected(req) || res.writableEnded || res.destroyed || !res.headersSent) return;
+  res.destroy();
 }
 
 export interface WorkerLogger {
@@ -273,12 +287,18 @@ class ProxyWorker extends EventEmitter {
       });
       const scheduledRequest = { req, res, settle: settleTask };
       this.scheduledRequests.add(scheduledRequest);
+      let activeAbortController: AbortController | undefined;
 
       try {
         void this.queue
           .add(async () => {
             try {
-              if (this.destroyed || req.socket.destroyed) {
+              if (
+                this.destroyed ||
+                requestDisconnected(req) ||
+                res.writableEnded ||
+                res.destroyed
+              ) {
                 this.log();
                 return;
               }
@@ -295,69 +315,91 @@ class ProxyWorker extends EventEmitter {
               req.startedAt = new Date();
               this.remaining -= 1;
 
-              const hasAuthorization = opts.overrideAuthorization
-                ? false
-                : !!req.headers.authorization;
+              const abortController = new AbortController();
+              activeAbortController = abortController;
+              req.abortController = abortController;
+              const abortRequest = (): void => abortController.abort();
+              const abortResponse = (): void => {
+                if (!res.writableEnded) abortController.abort();
+              };
+              req.once?.('aborted', abortRequest);
+              req.once?.('error', abortRequest);
+              req.socket?.once?.('close', abortRequest);
+              res.once?.('close', abortResponse);
 
-              await this.proxy.proxy(req, res, {
-                modifyHeaders: (headers) => {
-                  if (!hasAuthorization) headers.authorization = `token ${token}`;
-                  return headers;
-                },
-                onResponse: async (data) => {
-                  if (this.destroyed) return;
+              try {
+                const hasAuthorization = opts.overrideAuthorization
+                  ? false
+                  : !!req.headers.authorization;
 
-                  const linkHeader = data.headers.link;
-                  if (linkHeader && req.headers.host) {
-                    data.headers.link = linkHeader.replaceAll(
-                      'https://api.github.com',
-                      `http://${req.headers.host}`
-                    );
-                  }
+                await this.proxy.proxy(req, res, {
+                  abortController,
+                  modifyHeaders: (headers) => {
+                    if (!hasAuthorization) headers.authorization = `token ${token}`;
+                    return headers;
+                  },
+                  onResponse: async (data) => {
+                    if (this.destroyed) return;
 
-                  // Only update rate limits if we injected the token
-                  if (!hasAuthorization) {
-                    const status = data.status.toString();
-                    const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
-                    const rateLimitReset = data.headers['x-ratelimit-reset'];
-                    const rateLimitLimit = data.headers['x-ratelimit-limit'];
-
-                    if (rateLimitRemaining) {
-                      this.updateLimits({
-                        status,
-                        'x-ratelimit-remaining': rateLimitRemaining,
-                        'x-ratelimit-reset': rateLimitReset || '',
-                        'x-ratelimit-limit': rateLimitLimit || ''
-                      });
+                    const linkHeader = data.headers.link;
+                    if (linkHeader && req.headers.host) {
+                      data.headers.link = linkHeader.replaceAll(
+                        'https://api.github.com',
+                        `http://${req.headers.host}`
+                      );
                     }
 
-                    this.timeBudget -= Date.now() - (req.startedAt?.getTime() || 1000);
+                    // Only update rate limits if we injected the token
+                    if (!hasAuthorization) {
+                      const status = data.status.toString();
+                      const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
+                      const rateLimitReset = data.headers['x-ratelimit-reset'];
+                      const rateLimitLimit = data.headers['x-ratelimit-limit'];
 
-                    this.log(data.status, req.startedAt);
+                      if (rateLimitRemaining) {
+                        this.updateLimits({
+                          status,
+                          'x-ratelimit-remaining': rateLimitRemaining,
+                          'x-ratelimit-reset': rateLimitReset || '',
+                          'x-ratelimit-limit': rateLimitLimit || ''
+                        });
+                      }
 
-                    // Remove rate limit and scope headers
-                    for (const key of Object.keys(data.headers)) {
-                      if (/(ratelimit|scope)/i.test(key)) {
-                        delete data.headers[key];
+                      this.timeBudget -= Date.now() - (req.startedAt?.getTime() || 1000);
+
+                      this.log(data.status, req.startedAt);
+
+                      // Remove rate limit and scope headers
+                      for (const key of Object.keys(data.headers)) {
+                        if (/(ratelimit|scope)/i.test(key)) {
+                          delete data.headers[key];
+                        }
+                      }
+
+                      const exposeHeaders = data.headers['access-control-expose-headers'];
+                      if (exposeHeaders) {
+                        const filtered = exposeHeaders
+                          .split(', ')
+                          .filter((header) => !/(ratelimit|scope)/i.test(header))
+                          .join(', ');
+                        if (filtered) {
+                          data.headers['access-control-expose-headers'] = filtered;
+                        } else {
+                          delete data.headers['access-control-expose-headers'];
+                        }
                       }
                     }
-
-                    const exposeHeaders = data.headers['access-control-expose-headers'];
-                    if (exposeHeaders) {
-                      const filtered = exposeHeaders
-                        .split(', ')
-                        .filter((header) => !/(ratelimit|scope)/i.test(header))
-                        .join(', ');
-                      if (filtered) {
-                        data.headers['access-control-expose-headers'] = filtered;
-                      } else {
-                        delete data.headers['access-control-expose-headers'];
-                      }
-                    }
                   }
-                }
-              });
+                });
+              } finally {
+                req.removeListener?.('aborted', abortRequest);
+                req.removeListener?.('error', abortRequest);
+                req.socket?.removeListener?.('close', abortRequest);
+                res.removeListener?.('close', abortResponse);
+                if (req.abortController === abortController) delete req.abortController;
+              }
             } catch (error) {
+              activeAbortController?.abort();
               const err = error as Error & { code?: string };
               const errorCode = err.code || err.message;
               this.log(
@@ -365,13 +407,15 @@ class ProxyWorker extends EventEmitter {
                 req.startedAt
               );
 
-              if (!req.socket.destroyed && !req.socket.writableFinished && !res.destroyed) {
-                res.status(StatusCodes.BAD_GATEWAY).send();
+              if (!this.destroyed) {
+                if (!requestDisconnected(req) && !responseUnavailable(res)) {
+                  res.status(StatusCodes.BAD_GATEWAY).send();
+                } else {
+                  terminatePartialResponse(req, res);
+                }
               }
-
-              req.abortController?.abort();
-              terminateResponse(res);
             } finally {
+              activeAbortController = undefined;
               this.scheduledRequests.delete(scheduledRequest);
               settleTask();
             }
@@ -477,8 +521,9 @@ class ProxyWorker extends EventEmitter {
     this.destroyPromise = (async () => {
       const errors: unknown[] = [];
 
-      for (const { res, settle } of this.scheduledRequests) {
+      for (const { req, res, settle } of this.scheduledRequests) {
         try {
+          req.abortController?.abort();
           terminateResponse(res);
         } catch (error) {
           errors.push(error);
