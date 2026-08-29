@@ -1,13 +1,13 @@
 ---
 id: 15
 title: Documentation and developer-experience cleanup
-status: planned
+status: verified
 risk: low
 urgency: optional
 scope: README, CLI help, package-manager guidance, hooks, and Biome configuration
 ---
 
-**Status:** Planned; not yet implemented. **Priority:** Optional cleanup.
+**Status:** Verified; final review and validation are complete. **Priority:** Optional cleanup.
 
 ## Problem
 
@@ -18,8 +18,8 @@ mislead contributors or operators, but do not require product behavior changes.
 
 - The README badge is at `README.md:3`.
 - Package-manager commands are at `README.md:49-55`.
-- CLI help text includes the relevant wording at `src/cli.ts:64` and `src/cli.ts:68`.
-- README wording appears at `README.md:118-120`.
+- CLI help text includes the relevant wording at `src/cli.ts:112-116`.
+- The synchronized CLI help snapshot appears at `README.md:133-157`.
 - The pre-commit hook is at `.husky/pre-commit:1-2`.
 - Limited Biome rules are configured at `biome.json:25-33`.
 
@@ -35,14 +35,18 @@ earlier items. Keep scope limited to documentation and developer-experience cons
 
 ## Implementation notes
 
-Refresh stale badges and package commands, correct CLI/README wording, review hook behavior, and
-document only Biome rules that the project intentionally supports. Do not use this item to hide
-failures or perform a broad formatting rewrite.
+The README now references the existing `ci.yml` workflow, uses Yarn 1.22.22 with Node.js >=24, and
+documents frozen installation, test, lint, typecheck, build, and pre-commit checks. CLI help wording
+was corrected without changing option names, defaults, parsing, or runtime behavior. The hook now
+uses the same Yarn commands as the contributor instructions. The Biome schema URL matches the
+locked Biome 2.3.11 tool, while its intentionally limited `noConsole` and `noExplicitAny` rules are
+unchanged. No dependencies, workflows, public options, or product behavior were changed.
 
 ## Validation plan
 
-Verify every documented command against the selected package manager, inspect CLI help output, and
-run the existing hook/lint checks after any configuration change.
+Verified with Yarn 1.22.22 and Node.js v24.19.0 using `yarn test`, `yarn lint`, `npx tsc --noEmit`,
+`yarn build`, `node dist/cli.js --help`, and `git diff --check`. The generated help output was
+compared with the synchronized README snapshot; the full test suite passed with 232 tests.
 
 ## Definition of done
 

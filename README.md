@@ -1,23 +1,23 @@
 # 🖥️ GitHub Proxy Server
 
-[![Build + S3 sync](https://github.com/gittrends-app/github-proxy-server/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/gittrends-app/github-proxy-server/actions/workflows/build.yml)
+[![CI](https://github.com/gittrends-app/github-proxy-server/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/gittrends-app/github-proxy-server/actions/workflows/ci.yml)
 [![Coverage Status](https://coveralls.io/repos/github/gittrends-app/github-proxy-server/badge.svg)](https://coveralls.io/github/gittrends-app/github-proxy-server)
 [![GitHub version](https://badge.fury.io/gh/gittrends-app%2Fgithub-proxy-server.svg)](https://badge.fury.io/gh/gittrends-app%2Fgithub-proxy-server)
 ![GitHub](https://img.shields.io/github/license/gittrends-app/github-proxy-server)
 
 <br/>
 
-> GitHub Proxy Server is a tool to support developers and researchers collect massive amount of data from GitHub API (REST or GraphQL) by automatically managing access tokens and client requests to avoid triggering the GitHub API abuse detection mechanisms.
+> GitHub Proxy Server is a tool to support developers and researchers collecting massive amounts of data from the GitHub API (REST or GraphQL) by automatically managing access tokens and client requests to avoid triggering GitHub API abuse-detection mechanisms.
 
 <br/>
 
-**Why should I use it?** GitHub API has a limited number of requests per client and implements several mechanisms to detect user abuses. Thus, users must handle these restrictions in their applications. GitHub Proxy Server is a tool that abstracts these problems by means of a proxy server.
+**Why should I use it?** The GitHub API has a limited number of requests per client and implements several mechanisms to detect abuse. Thus, users must handle these restrictions in their applications. GitHub Proxy Server is a tool that abstracts these problems by means of a proxy server.
 
-**When should I use it?** This tool is intended to be used by developers and researches that need to perform massive data collection of public repositories using both REST and GraphQL APIs.
+**When should I use it?** This tool is intended to be used by developers and researchers who need to perform massive data collection from public repositories using both REST and GraphQL APIs.
 
 **When should I <ins>not</ins> use it?** If you need to deal with private information of users and repositories this tool is not for you (see [limitations section](#limitations)).
 
-**Can I use it with other libs?** Yes, as long they allow the users setup the proxy server as base url (see [samples](samples)).
+**Can I use it with other libs?** Yes, as long as they allow users to set up the proxy server as a base URL (see [samples](samples)).
 
 **How it works?**
 
@@ -28,7 +28,7 @@
 
 ## Features
 
-- Support to multiple access tokens
+- Support for multiple access tokens
 
 - Load balancing
 
@@ -46,10 +46,10 @@ First, you need to clone the repository:
 git clone https://github.com/gittrends-app/github-proxy-server.git
 ```
 
-Then, install dependencies, build files, and run the server:
+Node.js >=24 and Yarn 1.22.22 are required. Then, install dependencies, build files, and run the server:
 
 ```bash
-yarn install
+yarn install --frozen-lockfile
 yarn build
 yarn start --help
 ```
@@ -69,7 +69,7 @@ To use this tool you need to provide at least one GitHub access token:
 github-proxy-server -p 3000 -t <access_token>
 ```
 
-Or provide a file with several access token (one per line):
+Or provide a file with several access tokens (one per line):
 
 ```bash
 github-proxy-server -p 3000 --tokens <tokens.txt>
@@ -130,37 +130,37 @@ when credentials or traffic cross an untrusted network. A local or private-netwo
 check may continue to use `http://localhost:3000/status`; external health checks should use the
 trusted HTTPS endpoint.
 
-To more usage information, use the option `--help`.
+For more information, use the option `--help`.
 
 ```bash
-Usage: index [options]
+Usage: cli [options]
 
 Options:
-  -p, --port [port]                           Port to start the proxy server (default: 3000, env: PORT)
-  -t, --token [token]                         GitHub token to be used (default: [])
-  --tokens [file]                             File containing a list of tokens (env: GPS_TOKENS_FILE)
-  --request-timeout [timeout]                 Request timeout (ms) (default: 30000, env: GPS_REQUEST_TIMEOUT)
-  --min-remaining <number>                    Stop using token on a minimum of (default: 100, env: GPS_MIN_REMAINING)
-  --max-request-body-bytes [bytes]            Maximum request body size (bytes) (default: 1048576, env: GPS_MAX_REQUEST_BODY_BYTES)
-  --max-queue-depth [depth]                   Maximum queued requests per worker (default: 50, env: GPS_MAX_QUEUE_DEPTH)
-  --queue-wait-timeout [timeout]              Maximum queue wait (ms) (default: 30000, env: GPS_QUEUE_WAIT_TIMEOUT)
-  --request-lifetime-timeout [timeout]        Maximum request lifetime (ms) (default: 120000, env: GPS_REQUEST_LIFETIME_TIMEOUT)
-  --time-budget-multiplier [multiplier]       Time budget multiplier (>= 1.0) (default: 1, env: GPS_TIME_BUDGET_MULTIPLIER)
-  --external-base-url <url>                   Trusted external HTTP(S) base URL (env: GPS_EXTERNAL_BASE_URL)
-  --silent                                    Dont show requests outputs (env: GPS_SILENT)
-  --no-override-authorization                 By default, the authorization header is overrided with a configured token
-  --auth-username [username]                  Proxy authentication username (env: GPS_AUTH_USERNAME)
-  --auth-password [password]                  Proxy authentication password (env: GPS_AUTH_PASSWORD)
-  --no-status-monitor                         Disable requests monitoring on /metrics
-  -v, --version                               output the current version
-  -h, --help                                  display help for command
+  -p, --port [port]                      Port to start the proxy server (default: 3000, env: PORT)
+  -t, --token [token]                    GitHub token to be used (default: [])
+  --tokens [file]                        File containing a list of tokens (env: GPS_TOKENS_FILE)
+  --request-timeout [timeout]            Request timeout (ms) (default: 30000, env: GPS_REQUEST_TIMEOUT)
+  --min-remaining <number>               Stop using token on a minimum of (default: 100, env: GPS_MIN_REMAINING)
+  --max-request-body-bytes [bytes]       Maximum request body size (bytes) (default: 1048576, env: GPS_MAX_REQUEST_BODY_BYTES)
+  --max-queue-depth [depth]              Maximum queued requests per worker (default: 50, env: GPS_MAX_QUEUE_DEPTH)
+  --queue-wait-timeout [timeout]         Maximum queue wait (ms) (default: 30000, env: GPS_QUEUE_WAIT_TIMEOUT)
+  --request-lifetime-timeout [timeout]   Maximum request lifetime (ms) (default: 120000, env: GPS_REQUEST_LIFETIME_TIMEOUT)
+  --time-budget-multiplier [multiplier]  Time budget multiplier (>= 1.0) (default: 1, env: GPS_TIME_BUDGET_MULTIPLIER)
+  --external-base-url <url>              Trusted external HTTP(S) base URL (env: GPS_EXTERNAL_BASE_URL)
+  --silent                               Don't show request output (env: GPS_SILENT)
+  --no-override-authorization            By default, the authorization header is overridden with a configured token
+  --auth-username [username]             Proxy authentication username (env: GPS_AUTH_USERNAME)
+  --auth-password [password]             Proxy authentication password (env: GPS_AUTH_PASSWORD)
+  --no-status-monitor                    Disable requests monitoring on /metrics
+  -v, --version                          output the current version
+  -h, --help                             display help for command
 ```
 
 ## Limitations
 
-GitHub Proxy Server was primarly intended to be a tool to support massive data collection of public repositories and users. To this purpose, we use a pool of access tokens to proxy requests to GitHub servers. For each request, we select the token with the lowest queue size and with more requests available.
+GitHub Proxy Server was primarily intended to support massive data collection from public repositories and users. For this purpose, we use a pool of access tokens to proxy requests to GitHub servers. Requests are routed to a per-resource FIFO queue, then an event-driven dispatcher assigns them in round-robin order among eligible workers for that resource.
 
-Besides that, **we do not perform any verification on the clients requests, which may implies in security issues for the users who provided their tokens**.
+Besides that, **we do not perform any verification on clients' requests, which may imply security issues for users who provided their tokens**.
 
 To mitigate this problem, you can:
 
@@ -170,11 +170,27 @@ To mitigate this problem, you can:
 
 ## Integrations
 
-As mentioned, this tool can be used with serveral other libraries. You can find several examples in [samples](samples) folder.
+As mentioned, this tool can be used with several other libraries. You can find several examples in the [samples](samples) folder.
 
 ## Contributing
 
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+
+### Development checks
+
+Use Yarn 1.22.22 with Node.js >=24:
+
+```bash
+yarn install --frozen-lockfile
+yarn test
+yarn lint
+npx tsc --noEmit
+yarn build
+```
+
+The `.husky/pre-commit` hook runs `yarn lint` and `yarn build` automatically. Biome intentionally
+enables only the current limited `noConsole` and `noExplicitAny` checks; other recommended rules
+are not enabled by this project.
 
 ## License
 

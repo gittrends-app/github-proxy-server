@@ -109,11 +109,11 @@ export function createCli(): Command {
         .argParser(parseExternalBaseUrl)
         .env('GPS_EXTERNAL_BASE_URL')
     )
-    .addOption(new Option('--silent', 'Dont show requests outputs').env('GPS_SILENT'))
+    .addOption(new Option('--silent', "Don't show request output").env('GPS_SILENT'))
     .addOption(
       new Option(
         '--no-override-authorization',
-        'By default, the authorization header is overrided with a configured token'
+        'By default, the authorization header is overridden with a configured token'
       )
     )
     .addOption(

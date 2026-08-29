@@ -41,7 +41,7 @@ npm run format           # Format code with Biome
 ```
 
 ### Git Hooks
-Pre-commit: Runs `npm run lint` and `npm run build`
+Pre-commit: Runs `yarn lint` and `yarn build`
 Commit-msg: Validates commit messages using commitlint (conventional commits)
 
 ### Release
