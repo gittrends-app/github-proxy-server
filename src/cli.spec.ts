@@ -11,8 +11,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { createAuthConfiguration, createCli, PARTIAL_AUTHENTICATION_ERROR } from './cli.js';
 import {
   parseExternalBaseUrl,
+  parseMaxQueueDepthPerWorker,
+  parseMaxRequestBodyBytes,
   parseMinRemaining,
   parsePort,
+  parseQueueWaitTimeout,
+  parseRequestLifetimeTimeout,
   parseRequestTimeout,
   parseTimeBudgetMultiplier
 } from './router.js';
@@ -40,6 +44,25 @@ export async function cli(
 }
 
 describe('Test cli app', () => {
+  test.each([
+    ['max request body bytes', parseMaxRequestBodyBytes, 1024 * 1024, 16 * 1024 * 1024],
+    ['max queue depth', parseMaxQueueDepthPerWorker, 1, 1000],
+    ['queue wait timeout', parseQueueWaitTimeout, 1, 120000],
+    ['request lifetime timeout', parseRequestLifetimeTimeout, 1, 600000]
+  ])('should parse %s within its configured range', (_name, parser, min, max) => {
+    expect(parser(min)).toBe(min);
+    expect(parser(max)).toBe(max);
+  });
+
+  test.each([
+    [parseMaxRequestBodyBytes, 1024 * 1024 - 1],
+    [parseMaxQueueDepthPerWorker, 0],
+    [parseQueueWaitTimeout, 0],
+    [parseRequestLifetimeTimeout, 0]
+  ])('should reject an invalid enhancement limit', (parser, value) => {
+    expect(() => parser(value)).toThrowError();
+  });
+
   test('it should thrown an error if token/tokens is not provided', async () => {
     const result = await cli([], '.');
     expect(result.code).toEqual(1);
@@ -221,6 +244,15 @@ describe('createCli command structure', () => {
     expect(minRemainingOption?.defaultValue).toBe(100);
   });
 
+  test.each([
+    ['--max-request-body-bytes', 1024 * 1024],
+    ['--max-queue-depth', 50],
+    ['--queue-wait-timeout', 30000],
+    ['--request-lifetime-timeout', 120000]
+  ])('should have %s with default %s', (name, value) => {
+    expect(program.options.find((option) => option.long === name)?.defaultValue).toBe(value);
+  });
+
   test('should have --silent option', () => {
     const silentOption = program.options.find((opt) => opt.long === '--silent');
     expect(silentOption).toBeDefined();
@@ -357,6 +389,15 @@ describe('CLI environment variables', () => {
     const program = createCli();
     const minRemainingOption = program.options.find((opt) => opt.long === '--min-remaining');
     expect(minRemainingOption?.envVar).toBe('GPS_MIN_REMAINING');
+  });
+
+  test.each([
+    ['--max-request-body-bytes', 'GPS_MAX_REQUEST_BODY_BYTES'],
+    ['--max-queue-depth', 'GPS_MAX_QUEUE_DEPTH'],
+    ['--queue-wait-timeout', 'GPS_QUEUE_WAIT_TIMEOUT'],
+    ['--request-lifetime-timeout', 'GPS_REQUEST_LIFETIME_TIMEOUT']
+  ])('should support %s environment variable %s', (name, envVar) => {
+    expect(createCli().options.find((option) => option.long === name)?.envVar).toBe(envVar);
   });
 
   test('should support GPS_AUTH_USERNAME environment variable', () => {

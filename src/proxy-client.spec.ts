@@ -1,5 +1,6 @@
 /* Author: Hudson S. Borges */
 
+import EventEmitter from 'node:events';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Agent as HttpsAgent } from 'node:https';
 
@@ -83,6 +84,50 @@ describe('ProxyClient', () => {
 
       expect(res.statusCode).toBe(StatusCodes.CREATED);
       expect(res.writableFinished).toBe(true);
+    });
+
+    test('should accept a request body exactly at the configured limit', async () => {
+      client = new ProxyClient({ target: TARGET, timeout: TIMEOUT, maxRequestBodyBytes: 7 });
+      scope.post('/at-limit', '"12345"').reply(StatusCodes.OK, 'ok');
+      const { req, res } = createMockRequestResponse('POST', '/at-limit', '12345', {
+        'content-length': '7'
+      });
+
+      await expect(client.proxy(req, res)).resolves.toBeUndefined();
+      expect(res.writableFinished).toBe(true);
+    });
+
+    test('should reject a declared body larger than the configured limit before buffering', async () => {
+      client = new ProxyClient({ target: TARGET, timeout: TIMEOUT, maxRequestBodyBytes: 4 });
+      const { req, res } = createMockRequestResponse('POST', '/too-large', '12345', {
+        'content-length': '5'
+      });
+
+      await expect(client.proxy(req, res)).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+      expect(req.resume).toHaveBeenCalledTimes(1);
+    });
+
+    test('should reject a chunked body when it exceeds the configured limit', async () => {
+      client = new ProxyClient({ target: TARGET, timeout: TIMEOUT, maxRequestBodyBytes: 4 });
+      const { req, res } = createMockRequestResponse('POST', '/too-large', '12345');
+
+      await expect(client.proxy(req, res)).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+    });
+
+    test('should abort and clean up listeners while waiting for a slow upload', async () => {
+      const timeoutClient = new ProxyClient({ target: TARGET, timeout: 10 });
+      const req = Object.assign(new EventEmitter(), {
+        method: 'POST',
+        url: '/slow-upload',
+        headers: { host: 'localhost:3000' },
+        socket: { remoteAddress: '127.0.0.1', encrypted: false }
+      }) as unknown as IncomingMessage;
+      const { res } = createMockRequestResponse('POST', '/slow-upload');
+
+      await expect(timeoutClient.proxy(req, res)).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      expect(req.listenerCount('data')).toBe(0);
+      expect(req.listenerCount('end')).toBe(0);
+      expect(req.listenerCount('error')).toBe(0);
     });
 
     test('should copy request headers', async () => {
@@ -692,6 +737,7 @@ function createMockRequestResponse(
       remoteAddress: socketOptions.remoteAddress || '127.0.0.1',
       encrypted: socketOptions.encrypted || false
     },
+    resume: vi.fn(),
     on: vi.fn((event: string, callback: (chunk?: Buffer) => void) => {
       if (event === 'data' && body) {
         // Emit body data

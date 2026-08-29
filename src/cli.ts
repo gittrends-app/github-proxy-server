@@ -14,8 +14,12 @@ import omitBy from 'lodash/omitBy.js';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   parseExternalBaseUrl,
+  parseMaxQueueDepthPerWorker,
+  parseMaxRequestBodyBytes,
   parseMinRemaining,
   parsePort,
+  parseQueueWaitTimeout,
+  parseRequestLifetimeTimeout,
   parseRequestTimeout,
   parseTimeBudgetMultiplier
 } from './router.js';
@@ -71,6 +75,30 @@ export function createCli(): Command {
         .env('GPS_MIN_REMAINING')
     )
     .addOption(
+      new Option('--max-request-body-bytes [bytes]', 'Maximum request body size (bytes)')
+        .argParser(parseMaxRequestBodyBytes)
+        .default(1024 * 1024)
+        .env('GPS_MAX_REQUEST_BODY_BYTES')
+    )
+    .addOption(
+      new Option('--max-queue-depth [depth]', 'Maximum queued requests per worker')
+        .argParser(parseMaxQueueDepthPerWorker)
+        .default(50)
+        .env('GPS_MAX_QUEUE_DEPTH')
+    )
+    .addOption(
+      new Option('--queue-wait-timeout [timeout]', 'Maximum queue wait (ms)')
+        .argParser(parseQueueWaitTimeout)
+        .default(30000)
+        .env('GPS_QUEUE_WAIT_TIMEOUT')
+    )
+    .addOption(
+      new Option('--request-lifetime-timeout [timeout]', 'Maximum request lifetime (ms)')
+        .argParser(parseRequestLifetimeTimeout)
+        .default(120000)
+        .env('GPS_REQUEST_LIFETIME_TIMEOUT')
+    )
+    .addOption(
       new Option('--time-budget-multiplier [multiplier]', 'Time budget multiplier (>= 1.0)')
         .argParser(parseTimeBudgetMultiplier)
         .default(1)
@@ -122,6 +150,10 @@ export function createCli(): Command {
       const port = parsePort(options.port);
       const requestTimeout = parseRequestTimeout(options.requestTimeout);
       const minRemaining = parseMinRemaining(options.minRemaining);
+      const maxRequestBodyBytes = parseMaxRequestBodyBytes(options.maxRequestBodyBytes);
+      const maxQueueDepthPerWorker = parseMaxQueueDepthPerWorker(options.maxQueueDepth);
+      const queueWaitTimeout = parseQueueWaitTimeout(options.queueWaitTimeout);
+      const requestLifetimeTimeout = parseRequestLifetimeTimeout(options.requestLifetimeTimeout);
       const timeBudgetMultiplier = parseTimeBudgetMultiplier(options.timeBudgetMultiplier);
       const externalBaseUrl = parseExternalBaseUrl(options.externalBaseUrl);
 
@@ -131,6 +163,10 @@ export function createCli(): Command {
         overrideAuthorization: options.overrideAuthorization,
         tokens: tokens,
         minRemaining,
+        maxRequestBodyBytes,
+        maxQueueDepthPerWorker,
+        queueWaitTimeout,
+        requestLifetimeTimeout,
         timeBudgetMultiplier,
         externalBaseUrl,
         statusMonitor: options.statusMonitor,

@@ -6,11 +6,15 @@ import { StatusCodes } from 'http-status-codes';
 import PQueue from 'p-queue';
 import { Agent } from 'undici';
 
-import { ProxyClient, type ProxyHeaderValue } from './proxy-client.js';
+import { PayloadTooLargeError, ProxyClient, type ProxyHeaderValue } from './proxy-client.js';
 
 export type ProxyRouterOpts = {
   requestTimeout: number;
   minRemaining: number;
+  maxRequestBodyBytes?: number;
+  maxQueueDepthPerWorker?: number;
+  queueWaitTimeout?: number;
+  requestLifetimeTimeout?: number;
   overrideAuthorization?: boolean;
   timeBudgetMultiplier?: number;
   externalBaseUrl?: string;
@@ -19,6 +23,7 @@ export type ProxyRouterOpts = {
 type ExtendedRequest = Request & {
   startedAt?: Date;
   abortController?: AbortController;
+  proxyContext?: RequestContext;
 };
 
 type APIResources = 'core' | 'search' | 'code_search' | 'graphql';
@@ -34,6 +39,28 @@ const REFRESH_MAX_ATTEMPTS = 3;
 const REFRESH_BACKOFF_BASE_MS = 250;
 const REFRESH_BACKOFF_MAX_MS = 2000;
 const GITHUB_API_ORIGIN = 'https://api.github.com';
+const REQUEST_BODY_DEFAULT = 1024 * 1024;
+const QUEUE_DEPTH_DEFAULT = 50;
+const QUEUE_WAIT_DEFAULT = 30000;
+const REQUEST_LIFETIME_DEFAULT = 120000;
+
+type RequestContextState = 'queued' | 'active' | 'settled';
+
+type RequestContext = {
+  req: ExtendedRequest;
+  res: Response;
+  controller: AbortController;
+  acceptedAt: number;
+  enqueuedAt: number;
+  queueDeadline: number;
+  lifetimeDeadline: number;
+  state: RequestContextState;
+  queueTimer?: NodeJS.Timeout;
+  lifetimeTimer?: NodeJS.Timeout;
+  worker?: ProxyWorker;
+  timeoutReason?: 'queue' | 'lifetime';
+  onDisconnect: () => void;
+};
 
 function headerString(value: ProxyHeaderValue | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -110,7 +137,11 @@ export const NUMERIC_CONFIGURATION_LIMITS = {
   port: { min: 0, max: 65535 },
   requestTimeout: { min: 1, max: 120000 },
   minRemaining: { min: 0, max: 5000 },
-  timeBudgetMultiplier: { min: 1, max: 10 }
+  timeBudgetMultiplier: { min: 1, max: 10 },
+  maxRequestBodyBytes: { min: REQUEST_BODY_DEFAULT, max: REQUEST_BODY_DEFAULT * 16 },
+  maxQueueDepthPerWorker: { min: 1, max: 1000 },
+  queueWaitTimeout: { min: 1, max: 120000 },
+  requestLifetimeTimeout: { min: 1, max: 600000 }
 } as const;
 
 function parseNumericConfiguration(
@@ -157,6 +188,24 @@ export function parseTimeBudgetMultiplier(value: unknown): number {
   return parseNumericConfiguration(value, 'timeBudgetMultiplier', false);
 }
 
+export function parseMaxRequestBodyBytes(value: unknown): number {
+  return parseNumericConfiguration(value, 'maxRequestBodyBytes', true);
+}
+
+export function parseMaxQueueDepthPerWorker(value: unknown): number {
+  return parseNumericConfiguration(value, 'maxQueueDepthPerWorker', true);
+}
+
+export const parseMaxQueueDepth = parseMaxQueueDepthPerWorker;
+
+export function parseQueueWaitTimeout(value: unknown): number {
+  return parseNumericConfiguration(value, 'queueWaitTimeout', true);
+}
+
+export function parseRequestLifetimeTimeout(value: unknown): number {
+  return parseNumericConfiguration(value, 'requestLifetimeTimeout', true);
+}
+
 export function parseExternalBaseUrl(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string')
@@ -191,8 +240,28 @@ export function validateProxyRouterOptions(options: ProxyRouterOpts): ProxyRoute
       ? undefined
       : parseTimeBudgetMultiplier(options.timeBudgetMultiplier);
   const externalBaseUrl = parseExternalBaseUrl(options.externalBaseUrl);
+  const maxRequestBodyBytes = parseMaxRequestBodyBytes(
+    options.maxRequestBodyBytes ?? REQUEST_BODY_DEFAULT
+  );
+  const maxQueueDepthPerWorker = parseMaxQueueDepthPerWorker(
+    options.maxQueueDepthPerWorker ?? QUEUE_DEPTH_DEFAULT
+  );
+  const queueWaitTimeout = parseQueueWaitTimeout(options.queueWaitTimeout ?? QUEUE_WAIT_DEFAULT);
+  const requestLifetimeTimeout = parseRequestLifetimeTimeout(
+    options.requestLifetimeTimeout ?? REQUEST_LIFETIME_DEFAULT
+  );
 
-  return { ...options, requestTimeout, minRemaining, timeBudgetMultiplier, externalBaseUrl };
+  return {
+    ...options,
+    requestTimeout,
+    minRemaining,
+    maxRequestBodyBytes,
+    maxQueueDepthPerWorker,
+    queueWaitTimeout,
+    requestLifetimeTimeout,
+    timeBudgetMultiplier,
+    externalBaseUrl
+  };
 }
 
 const GITHUB_TOKEN_PATTERNS = [
@@ -209,6 +278,7 @@ export function validateGitHubToken(token: unknown): asserts token is string {
 
 type ScheduledRequest = Omit<QueuedRequest, 'req'> & {
   req: ExtendedRequest;
+  context: RequestContext;
   settle: () => void;
 };
 
@@ -237,6 +307,90 @@ function terminatePartialResponse(req: ExtendedRequest, res: Response): void {
   res.destroy();
 }
 
+function sendJsonResponse(
+  req: ExtendedRequest,
+  res: Response,
+  status: number,
+  body: Record<string, string>
+): void {
+  if (requestDisconnected(req) || responseUnavailable(res)) return;
+  res.status(status).json(body);
+}
+
+function disposeUnreadRequest(req: ExtendedRequest): void {
+  if (requestDisconnected(req) || req.readableEnded || req.complete) return;
+  if (typeof req.resume === 'function') {
+    req.resume();
+  } else if (typeof req.destroy === 'function') {
+    req.destroy();
+  }
+}
+
+function rejectRequest(
+  req: ExtendedRequest,
+  res: Response,
+  status: number,
+  body: Record<string, string>,
+  retryAfter?: string
+): void {
+  if (!requestDisconnected(req) && !res.writableEnded && !res.destroyed) {
+    if (res.headersSent) {
+      terminatePartialResponse(req, res);
+    } else {
+      if (retryAfter !== undefined) res.setHeader('Retry-After', retryAfter);
+      sendJsonResponse(req, res, status, body);
+    }
+  }
+  disposeUnreadRequest(req);
+}
+
+function createRequestContext(
+  req: ExtendedRequest,
+  res: Response,
+  onDisconnect?: (context: RequestContext) => void
+): RequestContext {
+  const controller = new AbortController();
+  let context!: RequestContext;
+  const disconnect = (): void => {
+    if (context.state === 'settled') return;
+    controller.abort();
+    onDisconnect?.(context);
+  };
+
+  context = {
+    req,
+    res,
+    controller,
+    acceptedAt: Date.now(),
+    enqueuedAt: Date.now(),
+    queueDeadline: 0,
+    lifetimeDeadline: 0,
+    state: 'queued',
+    onDisconnect: disconnect
+  };
+
+  req.once?.('aborted', disconnect);
+  req.once?.('error', disconnect);
+  req.socket?.once?.('close', disconnect);
+  res.once?.('close', disconnect);
+  req.proxyContext = context;
+  return context;
+}
+
+function cleanupRequestContext(context: RequestContext): void {
+  if (context.queueTimer) clearTimeout(context.queueTimer);
+  if (context.lifetimeTimer) clearTimeout(context.lifetimeTimer);
+  context.queueTimer = undefined;
+  context.lifetimeTimer = undefined;
+  context.req.removeListener?.('aborted', context.onDisconnect);
+  context.req.removeListener?.('error', context.onDisconnect);
+  context.req.socket?.removeListener?.('close', context.onDisconnect);
+  context.res.removeListener?.('close', context.onDisconnect);
+  if (context.req.proxyContext === context) delete context.req.proxyContext;
+  context.worker = undefined;
+  context.state = 'settled';
+}
+
 export interface WorkerLogger {
   resource: APIResources;
   token: string;
@@ -257,6 +411,7 @@ export interface RequestQueue {
   items: QueuedRequest[];
   enqueue(req: Request, res: Response): void;
   dequeue(): QueuedRequest | undefined;
+  remove(req: Request, res: Response): boolean;
   get size(): number;
 }
 
@@ -270,6 +425,7 @@ class ProxyWorker extends EventEmitter {
   private readonly opts: ProxyRouterOpts;
   private readonly agent: Agent;
   private readonly scheduledRequests = new Set<ScheduledRequest>();
+  private readonly ownedContexts = new Set<RequestContext>();
   private router?: ProxyRouter;
   private resourceQueue?: RequestQueue;
   private pullInterval?: NodeJS.Timeout;
@@ -338,6 +494,7 @@ class ProxyWorker extends EventEmitter {
     this.proxy = new ProxyClient({
       target: 'https://api.github.com',
       timeout: opts.requestTimeout,
+      maxRequestBodyBytes: opts.maxRequestBodyBytes,
       dispatcher: this.agent
     });
 
@@ -352,13 +509,22 @@ class ProxyWorker extends EventEmitter {
         return;
       }
 
+      const context = req.proxyContext ?? createRequestContext(req, res);
+      if (context.state === 'settled') return;
+      context.state = 'active';
+      context.worker = this;
+      this.ownedContexts.add(context);
+      if (context.queueTimer) clearTimeout(context.queueTimer);
+      context.queueTimer = undefined;
+
       let settleTask!: () => void;
       const completion = new Promise<void>((resolve) => {
         settleTask = resolve;
       });
-      const scheduledRequest = { req, res, settle: settleTask };
+      const scheduledRequest = { req, res, context, settle: settleTask };
       this.scheduledRequests.add(scheduledRequest);
-      let activeAbortController: AbortController | undefined;
+      const abortController = context.controller;
+      let activeAbortController: AbortController | undefined = abortController;
 
       try {
         void this.queue
@@ -368,11 +534,19 @@ class ProxyWorker extends EventEmitter {
                 this.destroyed ||
                 requestDisconnected(req) ||
                 res.writableEnded ||
-                res.destroyed
+                res.destroyed ||
+                abortController.signal.aborted
               ) {
+                if (context.timeoutReason === 'lifetime') {
+                  sendJsonResponse(req, res, StatusCodes.GATEWAY_TIMEOUT, {
+                    message: 'Request lifetime exceeded'
+                  });
+                }
                 this.log();
                 return;
               }
+
+              if (context.state !== 'active') return;
 
               const noTimeBudget = this.timeBudget < this.queue.pending * 1000;
               const noRequests =
@@ -386,8 +560,6 @@ class ProxyWorker extends EventEmitter {
               req.startedAt = new Date();
               this.remaining -= 1;
 
-              const abortController = new AbortController();
-              activeAbortController = abortController;
               req.abortController = abortController;
               const abortRequest = (): void => abortController.abort();
               const abortResponse = (): void => {
@@ -485,7 +657,15 @@ class ProxyWorker extends EventEmitter {
               );
 
               if (!this.destroyed) {
-                if (!requestDisconnected(req) && !responseUnavailable(res)) {
+                if (error instanceof PayloadTooLargeError) {
+                  rejectRequest(req, res, 413, {
+                    message: 'Request body too large'
+                  });
+                } else if (context.timeoutReason === 'lifetime') {
+                  rejectRequest(req, res, StatusCodes.GATEWAY_TIMEOUT, {
+                    message: 'Request lifetime exceeded'
+                  });
+                } else if (!requestDisconnected(req) && !responseUnavailable(res)) {
                   res.status(StatusCodes.BAD_GATEWAY).send();
                 } else {
                   terminatePartialResponse(req, res);
@@ -494,6 +674,11 @@ class ProxyWorker extends EventEmitter {
             } finally {
               activeAbortController = undefined;
               this.scheduledRequests.delete(scheduledRequest);
+              if (context.state === 'active') {
+                this.router?.completeWork(context);
+                if (!this.router) cleanupRequestContext(context);
+              }
+              this.ownedContexts.delete(context);
               settleTask();
             }
           })
@@ -590,17 +775,30 @@ class ProxyWorker extends EventEmitter {
     this.pullInterval = undefined;
     this._budgetResetInterval = undefined;
 
-    this.router = undefined;
     this.resourceQueue = undefined;
     this.checkForWork = undefined;
     this.removeAllListeners();
 
     this.destroyPromise = (async () => {
       const errors: unknown[] = [];
+      this.router?.completeWorkerContexts(this);
 
-      for (const { req, res, settle } of this.scheduledRequests) {
+      for (const context of [...this.ownedContexts]) {
+        if (context.worker && context.worker !== this) continue;
+        context.controller.abort();
+        this.router?.completeWork(context);
+        if (!this.router) cleanupRequestContext(context);
+        disposeUnreadRequest(context.req);
+        terminateResponse(context.res);
+        this.ownedContexts.delete(context);
+      }
+
+      for (const { req, res, context, settle } of this.scheduledRequests) {
         try {
+          context.controller.abort();
           req.abortController?.abort();
+          this.router?.completeWork(context);
+          disposeUnreadRequest(req);
           terminateResponse(res);
         } catch (error) {
           errors.push(error);
@@ -609,6 +807,7 @@ class ProxyWorker extends EventEmitter {
         }
       }
       this.scheduledRequests.clear();
+      this.router = undefined;
 
       try {
         await this.agent.destroy();
@@ -632,6 +831,13 @@ class QueueImpl implements RequestQueue {
 
   dequeue(): QueuedRequest | undefined {
     return this.items.shift();
+  }
+
+  remove(req: Request, res: Response): boolean {
+    const index = this.items.findIndex((item) => item.req === req && item.res === res);
+    if (index === -1) return false;
+    this.items.splice(index, 1);
+    return true;
   }
 
   get size(): number {
@@ -671,6 +877,7 @@ export default class ProxyRouter extends EventEmitter {
   private destroyed = false;
   private destroyPromise?: Promise<void>;
   private readonly removals = new Set<Promise<void>>();
+  private readonly requestContexts = new Set<RequestContext>();
 
   private emitError(error: unknown): void {
     if (!this.listenerCount('error')) return;
@@ -702,7 +909,17 @@ export default class ProxyRouter extends EventEmitter {
 
     this.clients = [];
     this.options = validateProxyRouterOptions(
-      Object.assign({ requestTimeout: 20000, minRemaining: 100 }, opts)
+      Object.assign(
+        {
+          requestTimeout: 20000,
+          minRemaining: 100,
+          maxRequestBodyBytes: REQUEST_BODY_DEFAULT,
+          maxQueueDepthPerWorker: QUEUE_DEPTH_DEFAULT,
+          queueWaitTimeout: QUEUE_WAIT_DEFAULT,
+          requestLifetimeTimeout: REQUEST_LIFETIME_DEFAULT
+        },
+        opts
+      )
     );
 
     // Initialize per-resource queues
@@ -716,24 +933,154 @@ export default class ProxyRouter extends EventEmitter {
     tokens.forEach((token) => this.addToken(token));
   }
 
+  private resourceFor(req: Request): APIResources {
+    const isGraphQL = req.path.startsWith('/graphql') && req.method === 'POST';
+    const isCodeSearch = req.path.startsWith('/search/code');
+    const isSearch = req.path.startsWith('/search');
+    return isGraphQL ? 'graphql' : isCodeSearch ? 'code_search' : isSearch ? 'search' : 'core';
+  }
+
+  private completeContext(context: RequestContext): void {
+    this.requestContexts.delete(context);
+    if (context.state === 'settled') return;
+    context.worker = undefined;
+    cleanupRequestContext(context);
+  }
+
+  completeWork(context: RequestContext): void {
+    if (context.state === 'settled') return;
+    if (context.state === 'queued') {
+      this.queues[this.resourceFor(context.req)].remove(context.req, context.res);
+    }
+    this.completeContext(context);
+  }
+
+  completeWorkerContexts(worker: ProxyWorker): void {
+    for (const context of [...this.requestContexts]) {
+      if (context.worker !== worker) continue;
+      context.controller.abort();
+      if (context.state === 'queued') {
+        this.queues[this.resourceFor(context.req)].remove(context.req, context.res);
+      }
+      disposeUnreadRequest(context.req);
+      terminateResponse(context.res);
+      this.completeContext(context);
+    }
+  }
+
+  private disconnectContext(context: RequestContext): void {
+    if (context.state === 'queued') {
+      this.queues[this.resourceFor(context.req)].remove(context.req, context.res);
+      disposeUnreadRequest(context.req);
+      this.completeContext(context);
+    }
+  }
+
+  private rejectContext(
+    context: RequestContext,
+    status: number,
+    body: Record<string, string>,
+    retryAfter?: string
+  ): void {
+    if (context.state === 'settled') return;
+    if (context.state === 'queued') {
+      this.queues[this.resourceFor(context.req)].remove(context.req, context.res);
+    }
+    context.controller.abort();
+    rejectRequest(context.req, context.res, status, body, retryAfter);
+    this.completeContext(context);
+  }
+
+  private expireQueueContext(context: RequestContext): void {
+    if (this.destroyed || context.state !== 'queued') return;
+    context.timeoutReason = 'queue';
+    this.rejectContext(context, StatusCodes.GATEWAY_TIMEOUT, {
+      message: 'Request expired in proxy queue'
+    });
+  }
+
+  private expireLifetime(context: RequestContext): void {
+    if (this.destroyed || context.state === 'settled') return;
+    context.timeoutReason = 'lifetime';
+    if (context.state === 'queued') {
+      this.rejectContext(context, StatusCodes.GATEWAY_TIMEOUT, {
+        message: 'Request lifetime exceeded'
+      });
+      return;
+    }
+    this.rejectContext(context, StatusCodes.GATEWAY_TIMEOUT, {
+      message: 'Request lifetime exceeded'
+    });
+  }
+
   async schedule(req: Request, res: Response): Promise<void> {
     if (this.destroyed) {
       terminateResponse(res);
       return;
     }
 
-    const isGraphQL = req.path.startsWith('/graphql') && req.method === 'POST';
-    const isCodeSearch = req.path.startsWith('/search/code');
-    const isSearch = req.path.startsWith('/search');
+    const resource = this.resourceFor(req);
+    const queue = this.queues[resource];
+    const capacity =
+      this.workersByResource[resource].filter((worker) => !worker.isDestroyed).length *
+      (this.options.maxQueueDepthPerWorker ?? QUEUE_DEPTH_DEFAULT);
+    const context = (req as ExtendedRequest).proxyContext;
 
-    const queue = isGraphQL
-      ? this.queues['graphql']
-      : isCodeSearch
-        ? this.queues['code_search']
-        : isSearch
-          ? this.queues['search']
-          : this.queues['core'];
+    if (queue.size >= capacity) {
+      if (context) {
+        this.rejectContext(
+          context,
+          StatusCodes.SERVICE_UNAVAILABLE,
+          {
+            message: 'Proxy queue is full'
+          },
+          '1'
+        );
+        return;
+      }
+      rejectRequest(
+        req as ExtendedRequest,
+        res,
+        StatusCodes.SERVICE_UNAVAILABLE,
+        {
+          message: 'Proxy queue is full'
+        },
+        '1'
+      );
+      return;
+    }
 
+    const requestContext =
+      context ??
+      createRequestContext(req as ExtendedRequest, res, (disconnectedContext) =>
+        this.disconnectContext(disconnectedContext)
+      );
+    if (requestContext.state === 'settled') return;
+    if (requestContext.lifetimeDeadline === 0) {
+      requestContext.lifetimeDeadline =
+        requestContext.acceptedAt +
+        (this.options.requestLifetimeTimeout ?? REQUEST_LIFETIME_DEFAULT);
+      requestContext.queueDeadline =
+        requestContext.acceptedAt + (this.options.queueWaitTimeout ?? QUEUE_WAIT_DEFAULT);
+      this.requestContexts.add(requestContext);
+      const lifetimeDelay = Math.max(0, requestContext.lifetimeDeadline - Date.now());
+      requestContext.lifetimeTimer = setTimeout(
+        () => this.expireLifetime(requestContext),
+        lifetimeDelay
+      ).unref();
+    }
+    requestContext.state = 'queued';
+    requestContext.worker = undefined;
+    requestContext.enqueuedAt = Date.now();
+    if (requestContext.queueDeadline <= Date.now()) {
+      this.expireQueueContext(requestContext);
+      return;
+    }
+    if (requestContext.queueTimer) clearTimeout(requestContext.queueTimer);
+    requestContext.queueTimer = setTimeout(
+      () => this.expireQueueContext(requestContext),
+      Math.max(0, requestContext.queueDeadline - Date.now())
+    ).unref();
     queue.enqueue(req, res);
   }
 
@@ -1014,11 +1361,27 @@ export default class ProxyRouter extends EventEmitter {
         let work = queue.dequeue();
         while (work) {
           try {
+            const context = (work.req as ExtendedRequest).proxyContext;
+            context?.controller.abort();
+            disposeUnreadRequest(work.req as ExtendedRequest);
+            if (context) this.completeContext(context);
             terminateResponse(work.res);
           } catch (error) {
             errors.push(error);
           }
           work = queue.dequeue();
+        }
+      }
+
+      for (const context of [...this.requestContexts]) {
+        try {
+          context.controller.abort();
+          disposeUnreadRequest(context.req);
+          terminateResponse(context.res);
+        } catch (error) {
+          errors.push(error);
+        } finally {
+          this.completeContext(context);
         }
       }
 

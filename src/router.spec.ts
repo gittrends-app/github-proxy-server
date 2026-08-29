@@ -8,11 +8,13 @@ import nock from 'nock';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { PayloadTooLargeError } from './proxy-client';
 import Middleware from './router';
 
 let app: Express;
 
 const FAKE_TOKEN = repeat('t', 40);
+const SECOND_TOKEN = `${repeat('u', 39)}1`;
 
 const RATE_LIMIT_RESOURCES = {
   core: { limit: 5000, remaining: 4000, reset: 2000000000 },
@@ -58,7 +60,11 @@ describe('Middleware constructor and methods', () => {
   test.each([
     ['requestTimeout', { requestTimeout: 0 }],
     ['minRemaining', { minRemaining: -1 }],
-    ['timeBudgetMultiplier', { timeBudgetMultiplier: 11 }]
+    ['timeBudgetMultiplier', { timeBudgetMultiplier: 11 }],
+    ['maxRequestBodyBytes', { maxRequestBodyBytes: 1024 * 1024 - 1 }],
+    ['maxQueueDepthPerWorker', { maxQueueDepthPerWorker: 0 }],
+    ['queueWaitTimeout', { queueWaitTimeout: 0 }],
+    ['requestLifetimeTimeout', { requestLifetimeTimeout: 0 }]
   ])('it should reject invalid direct %s options', (_name, invalidOptions) => {
     expect(() => new Middleware([FAKE_TOKEN], invalidOptions)).toThrow(`Invalid ${_name}`);
   });
@@ -342,6 +348,79 @@ describe('Middleware constructor and methods', () => {
     }
   });
 
+  test('should not write a local rejection response after the request disconnects', async () => {
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: { proxy: (...args: never[]) => Promise<void> };
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const { req, res, json } = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    const proxy = vi.spyOn(worker.proxy, 'proxy').mockImplementation(async () => {
+      req.aborted = true;
+      throw new PayloadTooLargeError();
+    });
+
+    try {
+      await worker.schedule(req, res);
+      expect(json).not.toHaveBeenCalled();
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
+  test('should destroy partial responses from the worker lifetime-error path', async () => {
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: { proxy: (...args: never[]) => Promise<void> };
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    const proxy = vi.spyOn(worker.proxy, 'proxy').mockImplementation(async (req) => {
+      requestResponse.res.headersSent = true;
+      (req as unknown as { proxyContext?: { timeoutReason?: string } })
+        .proxyContext!.timeoutReason = 'lifetime';
+      throw new Error('lifetime expired');
+    });
+
+    try {
+      await worker.schedule(requestResponse.req, requestResponse.res);
+      expect(requestResponse.destroy).toHaveBeenCalledTimes(1);
+      expect(requestResponse.json).not.toHaveBeenCalled();
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
   test('should abort the active proxy before settling a destroyed worker task', async () => {
     const middleware = new Middleware([FAKE_TOKEN]);
     const worker = (
@@ -396,6 +475,320 @@ describe('Middleware constructor and methods', () => {
       expect(send).not.toHaveBeenCalled();
     } finally {
       proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
+  test('should retain the router while destroying an active request context', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 0 });
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            schedule: (req: Request, res: Response) => Promise<void>;
+            destroy: () => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    const queue = (
+      middleware as unknown as {
+        queues: {
+          core: { dequeue: () => { req: Request; res: Response } | undefined; size: number };
+        };
+      }
+    ).queues.core;
+    const { req, res } = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    (worker as unknown as { remaining: number; reset: number }).remaining = 5000;
+    (worker as unknown as { remaining: number; reset: number }).reset = 0;
+    const proxy = vi
+      .spyOn(
+        (worker as unknown as { proxy: { proxy: (...args: never[]) => Promise<void> } }).proxy,
+        'proxy'
+      )
+      .mockImplementation(() => new Promise<void>(() => undefined));
+
+    try {
+      await middleware.schedule(req, res);
+      const work = queue.dequeue();
+      expect(work).toBeDefined();
+      const scheduled = worker.schedule(work!.req, work!.res);
+      await Promise.resolve();
+      const context = (req as Request & { proxyContext?: { controller: AbortController } })
+        .proxyContext;
+      expect(context).toBeDefined();
+      expect((worker as unknown as { ownedContexts: Set<unknown> }).ownedContexts.size).toBe(1);
+      await worker.destroy();
+      expect(context?.controller.signal.aborted).toBe(true);
+      expect((req as Request & { proxyContext?: unknown }).proxyContext).toBeUndefined();
+      await scheduled;
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
+  test('should abort the shared controller and return one fresh 504 at the lifetime deadline', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], {
+      minRemaining: 0,
+      requestLifetimeTimeout: 250,
+      queueWaitTimeout: 1000
+    });
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: {
+              proxy: (
+                req: Request,
+                res: Response,
+                options?: { abortController?: AbortController }
+              ) => Promise<void>;
+            };
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    requestResponse.json.mockImplementation(() => {
+      requestResponse.res.headersSent = true;
+    });
+    let observedSignal: AbortSignal | undefined;
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const proxy = vi.spyOn(worker.proxy, 'proxy').mockImplementation((_req, _res, options) => {
+      observedSignal = options?.abortController?.signal;
+      started();
+      return new Promise<void>((_resolve, reject) => {
+        observedSignal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('The operation was aborted', 'AbortError')),
+          { once: true }
+        );
+      });
+    });
+
+    try {
+      await middleware.schedule(requestResponse.req, requestResponse.res);
+      await startedPromise;
+      const context = (
+        requestResponse.req as Request & {
+          proxyContext?: { controller: AbortController };
+        }
+      ).proxyContext;
+      expect(context).toBeDefined();
+      await waitFor(() => requestResponse.json.mock.calls.length === 1);
+      expect(observedSignal).toBe(context?.controller.signal);
+      expect(observedSignal?.aborted).toBe(true);
+      expect(requestResponse.status).toHaveBeenCalledWith(StatusCodes.GATEWAY_TIMEOUT);
+      expect(requestResponse.json).toHaveBeenCalledWith({ message: 'Request lifetime exceeded' });
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
+  test('should destroy a partial response on active lifetime expiry', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], {
+      minRemaining: 0,
+      requestLifetimeTimeout: 250,
+      queueWaitTimeout: 1000
+    });
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: {
+              proxy: (
+                req: Request,
+                res: Response,
+                options?: { abortController?: AbortController }
+              ) => Promise<void>;
+            };
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    requestResponse.destroy.mockImplementation(() => {
+      requestResponse.res.destroyed = true;
+    });
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const proxy = vi.spyOn(worker.proxy, 'proxy').mockImplementation((_req, res, options) => {
+      res.headersSent = true;
+      started();
+      return new Promise<void>((_resolve, reject) => {
+        options?.abortController?.signal.addEventListener(
+          'abort',
+          () => reject(new DOMException('The operation was aborted', 'AbortError')),
+          { once: true }
+        );
+      });
+    });
+
+    try {
+      await middleware.schedule(requestResponse.req, requestResponse.res);
+      await startedPromise;
+      await waitFor(() => requestResponse.destroy.mock.calls.length === 1);
+      expect(requestResponse.json).not.toHaveBeenCalled();
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
+  test.each([
+    ['completed', { headersSent: false, writableEnded: true, destroyed: false }],
+    ['disconnected', { headersSent: false, writableEnded: false, destroyed: false }]
+  ])('should not write or destroy a %s response on active lifetime expiry', async (_name, state) => {
+    const middleware = new Middleware([FAKE_TOKEN], {
+      minRemaining: 0,
+      requestLifetimeTimeout: 250,
+      queueWaitTimeout: 1000
+    });
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: {
+              proxy: (
+                req: Request,
+                res: Response,
+                options?: { abortController?: AbortController }
+              ) => Promise<void>;
+            };
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const proxy = vi.spyOn(worker.proxy, 'proxy').mockImplementation((req, res, options) => {
+      if (_name === 'disconnected') req.aborted = true;
+      if (_name === 'completed') {
+        (res as unknown as { writableEnded: boolean }).writableEnded = true;
+      }
+      started();
+      return new Promise<void>((_resolve, reject) => {
+        options?.abortController?.signal.addEventListener(
+          'abort',
+          () => reject(new DOMException('The operation was aborted', 'AbortError')),
+          { once: true }
+        );
+      });
+    });
+
+    try {
+      await middleware.schedule(requestResponse.req, requestResponse.res);
+      await startedPromise;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(requestResponse.json).not.toHaveBeenCalled();
+      expect(requestResponse.destroy).not.toHaveBeenCalled();
+    } finally {
+      proxy.mockRestore();
+      await middleware.destroy();
+    }
+  });
+
+  test('should destroy a partial response when active lifetime expires', async () => {
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    await middleware.schedule(requestResponse.req, requestResponse.res);
+    const queue = (
+      middleware as unknown as {
+        queues: {
+          core: { dequeue: () => { req: Request; res: Response } | undefined; size: number };
+        };
+      }
+    ).queues.core;
+    queue.dequeue();
+    const context = (
+      requestResponse.req as Request & {
+        proxyContext?: { state: string; timeoutReason?: string };
+      }
+    ).proxyContext;
+    expect(context).toBeDefined();
+    context!.state = 'active';
+    context!.timeoutReason = 'lifetime';
+    requestResponse.res.headersSent = true;
+
+    try {
+      (
+        middleware as unknown as {
+          expireLifetime: (value: typeof context) => void;
+        }
+      ).expireLifetime(context);
+      expect(requestResponse.destroy).toHaveBeenCalledTimes(1);
+      expect(requestResponse.json).not.toHaveBeenCalled();
+    } finally {
+      await middleware.destroy();
+    }
+  });
+
+  test.each([
+    ['completed', { headersSent: false, writableEnded: true, destroyed: false }],
+    ['disconnected', { headersSent: false, writableEnded: false, destroyed: false }]
+  ])('should leave %s responses untouched on lifetime expiry', async (_name, state) => {
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const requestResponse = createStateAwareRequestResponse(state);
+    await middleware.schedule(requestResponse.req, requestResponse.res);
+    const context = (
+      requestResponse.req as Request & {
+        proxyContext?: { state: string };
+      }
+    ).proxyContext;
+    expect(context).toBeDefined();
+    if (_name === 'disconnected') requestResponse.req.aborted = true;
+
+    try {
+      (
+        middleware as unknown as {
+          expireLifetime: (value: typeof context) => void;
+        }
+      ).expireLifetime(context);
+      expect(requestResponse.json).not.toHaveBeenCalled();
+      expect(requestResponse.destroy).not.toHaveBeenCalled();
+    } finally {
       await middleware.destroy();
     }
   });
@@ -623,6 +1016,14 @@ describe('Rate-limit refresh policy', () => {
   });
 });
 
+async function waitFor(condition: () => boolean, timeout = 1000): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for test condition');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function createStateAwareRequestResponse(state: {
   headersSent: boolean;
   writableEnded: boolean;
@@ -631,28 +1032,37 @@ function createStateAwareRequestResponse(state: {
   req: Request & { aborted: boolean };
   res: Response;
   send: ReturnType<typeof vi.fn>;
+  json: ReturnType<typeof vi.fn>;
   status: ReturnType<typeof vi.fn>;
+  setHeader: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
+  resume: ReturnType<typeof vi.fn>;
 } {
   const socket = Object.assign(new EventEmitter(), { destroyed: false });
+  const resume = vi.fn();
   const req = Object.assign(new EventEmitter(), {
     method: 'GET',
     url: '/',
+    path: '/',
     headers: { host: 'localhost:3000' },
     socket,
+    resume,
     aborted: false,
     destroyed: false
   }) as unknown as Request & { aborted: boolean };
   const send = vi.fn();
-  const status = vi.fn(() => ({ send }));
+  const json = vi.fn();
+  const status = vi.fn(() => ({ send, json }));
+  const setHeader = vi.fn();
   const destroy = vi.fn();
   const res = Object.assign(new EventEmitter(), {
     ...state,
     status,
+    setHeader,
     destroy
   }) as unknown as Response;
 
-  return { req, res, send, status, destroy };
+  return { req, res, send, json, status, setHeader, destroy, resume };
 }
 
 describe('Middleware core', () => {
@@ -723,6 +1133,279 @@ describe('Middleware core', () => {
     expect(() => new Middleware([FAKE_TOKEN], { externalBaseUrl })).toThrow(
       'Invalid externalBaseUrl'
     );
+  });
+
+  test('it should reject requests when the shared resource queue is full', async () => {
+    const limited = new Middleware([FAKE_TOKEN], {
+      minRemaining: 5000,
+      maxQueueDepthPerWorker: 1
+    });
+    const first = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    const second = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+
+    try {
+      await limited.schedule(first.req, first.res);
+      await limited.schedule(second.req, second.res);
+      expect(second.setHeader).toHaveBeenCalledWith('Retry-After', '1');
+      expect(second.status).toHaveBeenCalledWith(StatusCodes.SERVICE_UNAVAILABLE);
+      expect(second.json).toHaveBeenCalledWith({ message: 'Proxy queue is full' });
+      expect(second.resume).toHaveBeenCalledTimes(1);
+    } finally {
+      await limited.destroy();
+    }
+  });
+
+  test('it should expire a queued request and remove it from the resource queue', async () => {
+    const limited = new Middleware([FAKE_TOKEN], {
+      minRemaining: 5000,
+      queueWaitTimeout: 1
+    });
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+
+    try {
+      await limited.schedule(requestResponse.req, requestResponse.res);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(requestResponse.status).toHaveBeenCalledWith(StatusCodes.GATEWAY_TIMEOUT);
+      expect(requestResponse.json).toHaveBeenCalledWith({
+        message: 'Request expired in proxy queue'
+      });
+      expect(requestResponse.resume).toHaveBeenCalledTimes(1);
+    } finally {
+      await limited.destroy();
+    }
+  });
+
+  test('it should abort the shared signal when queued lifetime expires', async () => {
+    vi.useFakeTimers();
+    const limited = new Middleware([FAKE_TOKEN], {
+      minRemaining: 5000,
+      requestLifetimeTimeout: 10,
+      queueWaitTimeout: 100
+    });
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+
+    try {
+      await limited.schedule(requestResponse.req, requestResponse.res);
+      const context = (
+        requestResponse.req as Request & {
+          proxyContext?: { controller: AbortController };
+        }
+      ).proxyContext;
+      expect(context).toBeDefined();
+      vi.advanceTimersByTime(10);
+      expect(context?.controller.signal.aborted).toBe(true);
+      expect(requestResponse.json).toHaveBeenCalledWith({ message: 'Request lifetime exceeded' });
+    } finally {
+      await limited.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  test('it should remove exactly one queued entry when a client disconnects', async () => {
+    const limited = new Middleware([FAKE_TOKEN], {
+      minRemaining: 5000,
+      maxQueueDepthPerWorker: 2
+    });
+    const first = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    const second = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+
+    try {
+      await limited.schedule(first.req, first.res);
+      await limited.schedule(second.req, second.res);
+      first.req.aborted = true;
+      first.req.emit('aborted');
+      first.req.emit('aborted');
+      const queue = (
+        limited as unknown as {
+          queues: { core: { size: number; items: Array<{ req: Request }> } };
+        }
+      ).queues.core;
+      expect(queue.size).toBe(1);
+      expect(queue.items[0]?.req).toBe(second.req);
+      expect((first.req as Request & { proxyContext?: unknown }).proxyContext).toBeUndefined();
+    } finally {
+      await limited.destroy();
+    }
+  });
+
+  test('it should preserve absolute deadlines and clear worker ownership across retries', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 0 });
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 0;
+    worker.reset = Math.floor(Date.now() / 1000) + 60;
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    const queue = (
+      middleware as unknown as {
+        queues: {
+          core: { dequeue: () => { req: Request; res: Response } | undefined; size: number };
+        };
+      }
+    ).queues.core;
+
+    try {
+      await middleware.schedule(requestResponse.req, requestResponse.res);
+      const context = (
+        requestResponse.req as Request & {
+          proxyContext?: { queueDeadline: number; lifetimeDeadline: number; worker?: unknown };
+        }
+      ).proxyContext;
+      const deadlines = [context?.queueDeadline, context?.lifetimeDeadline];
+      const work = queue.dequeue();
+      await worker.schedule(work!.req, work!.res);
+      expect([context?.queueDeadline, context?.lifetimeDeadline]).toEqual(deadlines);
+      expect(context?.worker).toBeUndefined();
+      expect(queue.size).toBe(1);
+    } finally {
+      await middleware.destroy();
+    }
+  });
+
+  test('should preserve a requeued context when worker A is destroyed before worker B claims it', async () => {
+    const middleware = new Middleware([FAKE_TOKEN, SECOND_TOKEN], {
+      minRemaining: 5000,
+      queueWaitTimeout: 1000,
+      requestLifetimeTimeout: 2000
+    });
+    await middleware.refreshRateLimits();
+    const workerA = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            schedule: (req: Request, res: Response) => Promise<void>;
+            destroy: () => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    workerA.remaining = 0;
+    workerA.reset = Math.floor(Date.now() / 1000) + 60;
+    const workerB = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: {
+              proxy: (
+                req: Request,
+                res: Response,
+                options?: { abortController?: AbortController }
+              ) => Promise<void>;
+            };
+          }>;
+        };
+      }
+    ).workersByResource.core[1];
+    workerB.remaining = 0;
+    workerB.reset = Math.floor(Date.now() / 1000) + 60;
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    const queue = (
+      middleware as unknown as {
+        queues: {
+          core: { dequeue: () => { req: Request; res: Response } | undefined; size: number };
+        };
+      }
+    ).queues.core;
+    let observedSignal: AbortSignal | undefined;
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+
+    try {
+      await middleware.schedule(requestResponse.req, requestResponse.res);
+      const context = (
+        requestResponse.req as Request & {
+          proxyContext?: {
+            controller: AbortController;
+            queueDeadline: number;
+            lifetimeDeadline: number;
+            worker?: unknown;
+          };
+        }
+      ).proxyContext;
+      expect(context).toBeDefined();
+      const deadlines = [context!.queueDeadline, context!.lifetimeDeadline];
+      const work = queue.dequeue();
+      await workerA.schedule(work!.req, work!.res);
+      expect(queue.size).toBe(1);
+      expect(context!.controller.signal.aborted).toBe(false);
+      expect([context!.queueDeadline, context!.lifetimeDeadline]).toEqual(deadlines);
+      expect(context!.worker).toBeUndefined();
+
+      await workerA.destroy();
+      expect(queue.size).toBe(1);
+      expect(requestResponse.destroy).not.toHaveBeenCalled();
+      expect(context!.controller.signal.aborted).toBe(false);
+
+      const proxy = vi.spyOn(workerB.proxy, 'proxy').mockImplementation((_req, _res, options) => {
+        observedSignal = options?.abortController?.signal;
+        started();
+        return new Promise<void>((_resolve, reject) => {
+          observedSignal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('The operation was aborted', 'AbortError')),
+            { once: true }
+          );
+        });
+      });
+
+      try {
+        workerB.remaining = 5000;
+        workerB.reset = 0;
+        await startedPromise;
+        expect(observedSignal).toBe(context!.controller.signal);
+        expect([context!.queueDeadline, context!.lifetimeDeadline]).toEqual(deadlines);
+      } finally {
+        proxy.mockRestore();
+      }
+    } finally {
+      await middleware.destroy();
+    }
   });
 
   describe('GitHub API is online', () => {

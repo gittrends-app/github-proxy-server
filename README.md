@@ -113,6 +113,14 @@ When the proxy is deployed behind a trusted public URL, set `--external-base-url
 rewritten to that base; if it is omitted, upstream links are preserved unchanged and the untrusted
 inbound `Host` header is never used for external URLs.
 
+Request bodies are limited to 1 MiB by default and can be configured with
+`--max-request-body-bytes` or `GPS_MAX_REQUEST_BODY_BYTES` (1–16 MiB). Each live worker contributes
+50 queue slots by default; configure this with `--max-queue-depth` or `GPS_MAX_QUEUE_DEPTH`.
+Queued requests expire after 30 seconds by default (`--queue-wait-timeout` or
+`GPS_QUEUE_WAIT_TIMEOUT`), and the total request lifetime is limited to 120 seconds by default
+(`--request-lifetime-timeout` or `GPS_REQUEST_LIFETIME_TIMEOUT`). Body overflow returns `413`, a
+full queue returns `503` with `Retry-After: 1`, and queue/lifetime expiry returns `504`.
+
 ### Deployment and TLS
 
 The server listens for plain HTTP and binds to all interfaces when started by the CLI. Do not expose
@@ -133,6 +141,10 @@ Options:
   --tokens [file]                             File containing a list of tokens (env: GPS_TOKENS_FILE)
   --request-timeout [timeout]                 Request timeout (ms) (default: 30000, env: GPS_REQUEST_TIMEOUT)
   --min-remaining <number>                    Stop using token on a minimum of (default: 100, env: GPS_MIN_REMAINING)
+  --max-request-body-bytes [bytes]            Maximum request body size (bytes) (default: 1048576, env: GPS_MAX_REQUEST_BODY_BYTES)
+  --max-queue-depth [depth]                   Maximum queued requests per worker (default: 50, env: GPS_MAX_QUEUE_DEPTH)
+  --queue-wait-timeout [timeout]              Maximum queue wait (ms) (default: 30000, env: GPS_QUEUE_WAIT_TIMEOUT)
+  --request-lifetime-timeout [timeout]        Maximum request lifetime (ms) (default: 120000, env: GPS_REQUEST_LIFETIME_TIMEOUT)
   --time-budget-multiplier [multiplier]       Time budget multiplier (>= 1.0) (default: 1, env: GPS_TIME_BUDGET_MULTIPLIER)
   --external-base-url <url>                   Trusted external HTTP(S) base URL (env: GPS_EXTERNAL_BASE_URL)
   --silent                                    Dont show requests outputs (env: GPS_SILENT)

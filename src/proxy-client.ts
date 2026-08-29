@@ -21,17 +21,29 @@ const HOP_BY_HOP_HEADERS = new Set([
 export interface ProxyClientOptions {
   target: string;
   timeout: number;
+  maxRequestBodyBytes?: number;
   dispatcher?: Dispatcher;
+}
+
+export class PayloadTooLargeError extends Error {
+  readonly code = 'PAYLOAD_TOO_LARGE';
+
+  constructor() {
+    super('Request body too large');
+    this.name = 'PayloadTooLargeError';
+  }
 }
 
 export class ProxyClient {
   private readonly target: string;
   private readonly timeout: number;
+  private readonly maxRequestBodyBytes: number;
   private readonly dispatcher?: Dispatcher;
 
   constructor(options: ProxyClientOptions) {
     this.target = options.target;
     this.timeout = options.timeout;
+    this.maxRequestBodyBytes = options.maxRequestBodyBytes ?? 1024 * 1024;
     this.dispatcher = options.dispatcher;
   }
 
@@ -227,6 +239,13 @@ export class ProxyClient {
   private readRequestBody(req: IncomingMessage, signal: AbortSignal): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
+      let size = 0;
+      const contentLength = req.headers['content-length'];
+      const declaredLength = Array.isArray(contentLength)
+        ? Number(contentLength[0])
+        : contentLength === undefined
+          ? undefined
+          : Number(contentLength);
       const cleanup = (): void => {
         req.removeListener?.('data', onData);
         req.removeListener?.('end', onEnd);
@@ -234,8 +253,21 @@ export class ProxyClient {
         signal.removeEventListener('abort', onAbort);
       };
       const onData = (chunk: Buffer): void => {
+        size += chunk.length;
+        if (size > this.maxRequestBodyBytes) {
+          cleanup();
+          req.resume?.();
+          reject(new PayloadTooLargeError());
+          return;
+        }
         chunks.push(chunk);
       };
+
+      if (declaredLength !== undefined && declaredLength > this.maxRequestBodyBytes) {
+        reject(new PayloadTooLargeError());
+        req.resume?.();
+        return;
+      }
       const onEnd = (): void => {
         cleanup();
         resolve(Buffer.concat(chunks));
