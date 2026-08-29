@@ -22,6 +22,46 @@ type ExtendedRequest = Request & {
 
 type APIResources = 'core' | 'search' | 'code_search' | 'graphql';
 
+type RateLimit = {
+  remaining: number;
+  reset: number;
+};
+
+type RateLimitResources = Record<APIResources, RateLimit>;
+
+const REFRESH_MAX_ATTEMPTS = 3;
+const REFRESH_BACKOFF_BASE_MS = 250;
+const REFRESH_BACKOFF_MAX_MS = 2000;
+
+class RefreshFailure extends Error {}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function parseRateLimitResources(value: unknown): RateLimitResources {
+  if (!isRecord(value)) throw new RefreshFailure('invalid resource shape');
+
+  const resources = {} as RateLimitResources;
+  for (const resource of ['core', 'search', 'code_search', 'graphql'] as APIResources[]) {
+    const data = value[resource];
+    if (
+      !isRecord(data) ||
+      typeof data.remaining !== 'number' ||
+      !Number.isSafeInteger(data.remaining) ||
+      data.remaining < 0 ||
+      typeof data.reset !== 'number' ||
+      !Number.isSafeInteger(data.reset) ||
+      data.reset < 0
+    ) {
+      throw new RefreshFailure('invalid resource shape');
+    }
+    resources[resource] = { remaining: data.remaining, reset: data.reset };
+  }
+
+  return resources;
+}
+
 export const NUMERIC_CONFIGURATION_LIMITS = {
   port: { min: 0, max: 65535 },
   requestTimeout: { min: 1, max: 120000 },
@@ -348,32 +388,12 @@ class ProxyWorker extends EventEmitter {
     };
   }
 
-  public async refreshRateLimits(): Promise<void> {
+  applyRateLimit(limit: RateLimit): void {
     if (this.destroyed) return;
 
-    await fetch('https://api.github.com/rate_limit', {
-      headers: {
-        authorization: `token ${this.token}`,
-        'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
-      }
-    }).then(async (response) => {
-      if (this.destroyed) return;
-
-      if (response.status === 401) {
-        this.remaining = 0;
-        this.reset = Number.POSITIVE_INFINITY;
-        this.emitError(`Invalid token detected (${this.token.slice(-4)}).`, this.token);
-      } else {
-        const res = (await response.json()) as {
-          resources: Record<string, { remaining: number; reset: number }>;
-        };
-        if (this.destroyed) return;
-
-        this.remaining = res.resources[this.defaults.resource].remaining;
-        this.reset = res.resources[this.defaults.resource].reset;
-        this.log(undefined, new Date());
-      }
-    });
+    this.remaining = limit.remaining;
+    this.reset = limit.reset;
+    this.log(undefined, new Date());
   }
 
   private updateLimits(headers: Record<string, string>): void {
@@ -518,6 +538,12 @@ export default class ProxyRouter extends EventEmitter {
     code_search: ProxyWorker;
     graphql: ProxyWorker;
     refreshTimers: NodeJS.Timeout[];
+    refreshPromise?: Promise<void>;
+    refreshController?: AbortController;
+    refreshTimeout?: NodeJS.Timeout;
+    retryTimer?: NodeJS.Timeout;
+    retryWaitResolve?: () => void;
+    removed?: boolean;
   }>;
 
   private destroyed = false;
@@ -604,58 +630,200 @@ export default class ProxyRouter extends EventEmitter {
     const graphql = new ProxyWorker(token, { ...this.options, resource: 'graphql' });
 
     const workers = [core, search, codeSearch, graphql];
-    const refreshTimers: NodeJS.Timeout[] = [];
 
     for (const worker of workers) {
       worker.on('error', (error: unknown) => this.emitError(error));
       worker.on('retry', (req: ExtendedRequest, res: Response) => this.schedule(req, res));
       worker.on('log', (log: WorkerLogger) => this.emit('log', log));
       worker.on('warn', (message: string) => this.emit('warn', message));
-      void worker
-        .refreshRateLimits()
-        .then(() => {
-          if (!this.destroyed && !worker.isDestroyed) this.emit('ready');
-        })
-        .catch((error: unknown) => {
-          if (!this.destroyed && !worker.isDestroyed) this.emitError(error);
-        });
-      // Auto-refresh rate limits every 15 minutes
-      refreshTimers.push(
-        setInterval(
-          () => {
-            if (this.destroyed || worker.isDestroyed) return;
-            void worker.refreshRateLimits().catch((error: unknown) => {
-              if (!this.destroyed && !worker.isDestroyed) this.emitError(error);
-            });
-          },
-          15 * 60 * 1000
-        ).unref()
-      );
       // Phase 3: Set router reference to enable pull mechanism
       worker.setRouter(this);
     }
 
-    this.clients.push({
+    const client = {
       token,
       core,
       search,
       code_search: codeSearch,
       graphql,
-      refreshTimers
-    });
+      refreshTimers: [] as NodeJS.Timeout[]
+    };
+    this.clients.push(client);
 
     // Update worker caches
     this.workersByResource.core.push(core);
     this.workersByResource.search.push(search);
     this.workersByResource.code_search.push(codeSearch);
     this.workersByResource.graphql.push(graphql);
+
+    this.startDetachedRefresh(client, true);
+    // Auto-refresh rate limits every 15 minutes, once per token.
+    client.refreshTimers.push(
+      setInterval(() => this.startDetachedRefresh(client, false), 15 * 60 * 1000).unref()
+    );
+  }
+
+  private startDetachedRefresh(client: (typeof this.clients)[number], emitReady: boolean): void {
+    void this.refreshClient(client)
+      .then(() => {
+        if (emitReady && !this.destroyed && !client.removed) this.emit('ready');
+      })
+      .catch((error: unknown) => {
+        if (!this.destroyed && !client.removed) this.emitError(error);
+      });
+  }
+
+  private cancelRefresh(client: (typeof this.clients)[number]): void {
+    client.refreshController?.abort();
+    if (client.refreshTimeout) clearTimeout(client.refreshTimeout);
+    client.refreshTimeout = undefined;
+
+    if (client.retryTimer) clearTimeout(client.retryTimer);
+    client.retryTimer = undefined;
+    const resolveRetry = client.retryWaitResolve;
+    client.retryWaitResolve = undefined;
+    resolveRetry?.();
+  }
+
+  private async waitForRefreshRetry(
+    client: (typeof this.clients)[number],
+    delay: number
+  ): Promise<void> {
+    if (this.destroyed || client.removed) return;
+
+    await new Promise<void>((resolve) => {
+      let timer: NodeJS.Timeout;
+      const complete = (): void => {
+        if (client.retryTimer === timer) client.retryTimer = undefined;
+        if (client.retryWaitResolve === complete) client.retryWaitResolve = undefined;
+        resolve();
+      };
+      timer = setTimeout(complete, delay).unref();
+      client.retryTimer = timer;
+      client.retryWaitResolve = complete;
+    });
+  }
+
+  private async awaitRefreshAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) throw new RefreshFailure('refresh aborted');
+
+    let abort: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      abort = () => reject(new RefreshFailure('refresh aborted'));
+      signal.addEventListener('abort', abort, { once: true });
+    });
+
+    try {
+      return await Promise.race([operation, aborted]);
+    } finally {
+      if (abort) signal.removeEventListener('abort', abort);
+    }
+  }
+
+  private async fetchRateLimits(
+    client: (typeof this.clients)[number]
+  ): Promise<RateLimitResources | undefined> {
+    let reason = 'network failure';
+
+    for (let attempt = 0; attempt < REFRESH_MAX_ATTEMPTS; attempt += 1) {
+      if (this.destroyed || client.removed) return undefined;
+
+      const controller = new AbortController();
+      let timedOut = false;
+      client.refreshController = controller;
+      client.refreshTimeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, this.options.requestTimeout).unref();
+
+      try {
+        const response = await this.awaitRefreshAbort(
+          fetch('https://api.github.com/rate_limit', {
+            headers: {
+              authorization: `token ${client.token}`,
+              'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
+            },
+            signal: controller.signal
+          }),
+          controller.signal
+        );
+
+        if (response.status < 200 || response.status >= 300) {
+          throw new RefreshFailure(`HTTP response ${response.status}`);
+        }
+
+        let body: unknown;
+        try {
+          body = await this.awaitRefreshAbort(response.json(), controller.signal);
+        } catch {
+          throw new RefreshFailure('malformed JSON');
+        }
+
+        if (!isRecord(body) || !('resources' in body)) {
+          throw new RefreshFailure('invalid resource shape');
+        }
+        return parseRateLimitResources(body.resources);
+      } catch (error) {
+        if (this.destroyed || client.removed) return undefined;
+        reason = timedOut
+          ? `attempt timed out after ${this.options.requestTimeout}ms`
+          : error instanceof RefreshFailure
+            ? error.message
+            : 'network failure';
+        if (attempt + 1 < REFRESH_MAX_ATTEMPTS) {
+          const delay = Math.min(REFRESH_BACKOFF_BASE_MS * 2 ** attempt, REFRESH_BACKOFF_MAX_MS);
+          await this.waitForRefreshRetry(client, delay);
+        }
+      } finally {
+        if (client.refreshController === controller) client.refreshController = undefined;
+        if (client.refreshTimeout) clearTimeout(client.refreshTimeout);
+        if (client.refreshController === undefined) client.refreshTimeout = undefined;
+      }
+    }
+
+    throw new Error(
+      `Rate-limit refresh failed for token ending ${client.token.slice(-4)} after ${REFRESH_MAX_ATTEMPTS} attempts: ${reason}`
+    );
+  }
+
+  private refreshClient(client: (typeof this.clients)[number]): Promise<void> {
+    if (this.destroyed || client.removed) return Promise.resolve();
+    if (client.refreshPromise) return client.refreshPromise;
+
+    const refreshPromise = (async () => {
+      try {
+        const resources = await this.fetchRateLimits(client);
+        if (!resources || this.destroyed || client.removed) return;
+
+        for (const worker of [client.core, client.search, client.code_search, client.graphql]) {
+          worker.applyRateLimit(resources[worker.defaults.resource]);
+        }
+      } catch (error) {
+        if (!this.destroyed && !client.removed) throw error;
+      }
+    })();
+    client.refreshPromise = refreshPromise;
+    void refreshPromise.then(
+      () => {
+        if (client.refreshPromise === refreshPromise) client.refreshPromise = undefined;
+      },
+      () => {
+        if (client.refreshPromise === refreshPromise) client.refreshPromise = undefined;
+      }
+    );
+    return refreshPromise;
   }
 
   private async destroyClient(client: (typeof this.clients)[number]): Promise<void> {
     const workers = [client.core, client.search, client.code_search, client.graphql];
+    client.removed = true;
     for (const timer of client.refreshTimers) clearInterval(timer);
+    this.cancelRefresh(client);
 
-    const results = await Promise.allSettled(workers.map((worker) => worker.destroy()));
+    const results = await Promise.allSettled([
+      client.refreshPromise ?? Promise.resolve(),
+      ...workers.map((worker) => worker.destroy())
+    ]);
     const errors = results
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
       .map((result) => result.reason);
@@ -683,6 +851,7 @@ export default class ProxyRouter extends EventEmitter {
     if (index === -1) return Promise.resolve();
 
     const client = this.clients.splice(index, 1)[0];
+    client.removed = true;
     const removal = this.destroyClient(client);
     this.removals.add(removal);
     void removal.then(
@@ -696,15 +865,12 @@ export default class ProxyRouter extends EventEmitter {
     if (this.destroyed) return;
 
     const clients = [...this.clients];
-    await Promise.all(
-      clients.map((client) =>
-        Promise.all(
-          [client.core, client.search, client.code_search, client.graphql].map((worker) =>
-            worker.refreshRateLimits()
-          )
-        )
-      )
-    );
+    try {
+      await Promise.all(clients.map((client) => this.refreshClient(client)));
+    } catch (error) {
+      if (!this.destroyed) this.emitError(error);
+      throw error;
+    }
     if (!this.destroyed) this.emit('ready');
   }
 

@@ -12,6 +12,23 @@ let app: Express;
 
 const FAKE_TOKEN = repeat('t', 40);
 
+const RATE_LIMIT_RESOURCES = {
+  core: { limit: 5000, remaining: 4000, reset: 2000000000 },
+  search: { limit: 30, remaining: 25, reset: 2000000000 },
+  code_search: { limit: 10, remaining: 8, reset: 2000000000 },
+  graphql: { limit: 5000, remaining: 4500, reset: 2000000000 }
+};
+
+function rateLimitResponse(
+  resources: unknown = RATE_LIMIT_RESOURCES,
+  status = StatusCodes.OK
+): globalThis.Response {
+  return {
+    status,
+    json: async () => ({ resources })
+  } as unknown as globalThis.Response;
+}
+
 describe('Middleware constructor and methods', () => {
   beforeAll(() => {
     nock('https://api.github.com', { allowUnmocked: false })
@@ -197,6 +214,228 @@ describe('Middleware constructor and methods', () => {
   });
 });
 
+describe('Rate-limit refresh policy', () => {
+  test('should fetch once per token and fan out validated resources', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(rateLimitResponse());
+    const middleware = new Middleware([FAKE_TOKEN]);
+
+    try {
+      await new Promise((resolve) => middleware.once('ready', resolve));
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      const workers = (
+        middleware as unknown as {
+          workersByResource: Record<string, Array<{ remaining: number; reset: number }>>;
+        }
+      ).workersByResource;
+      expect(workers.core[0]).toMatchObject({ remaining: 4000, reset: 2000000000 });
+      expect(workers.search[0]).toMatchObject({ remaining: 25, reset: 2000000000 });
+      expect(workers.code_search[0]).toMatchObject({ remaining: 8, reset: 2000000000 });
+      expect(workers.graphql[0]).toMatchObject({ remaining: 4500, reset: 2000000000 });
+    } finally {
+      await middleware.destroy();
+      fetch.mockRestore();
+    }
+  });
+
+  test('should coalesce concurrent refreshes for a token', async () => {
+    let resolveResponse!: (response: globalThis.Response) => void;
+    const pendingResponse = new Promise<globalThis.Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(rateLimitResponse())
+      .mockImplementation(() => pendingResponse);
+    const middleware = new Middleware([FAKE_TOKEN]);
+
+    try {
+      await new Promise((resolve) => middleware.once('ready', resolve));
+      const first = middleware.refreshRateLimits();
+      const second = middleware.refreshRateLimits();
+      expect(fetch).toHaveBeenCalledTimes(2);
+
+      resolveResponse(rateLimitResponse());
+      await Promise.all([first, second]);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      await middleware.destroy();
+      fetch.mockRestore();
+    }
+  });
+
+  test('should retry bounded refresh failures and preserve stale values', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(rateLimitResponse());
+    const middleware = new Middleware([FAKE_TOKEN]);
+
+    try {
+      await new Promise((resolve) => middleware.once('ready', resolve));
+      const worker = (
+        middleware as unknown as {
+          workersByResource: { core: Array<{ remaining: number; reset: number }> };
+        }
+      ).workersByResource.core[0];
+      const previous = { remaining: worker.remaining, reset: worker.reset };
+      fetch.mockRejectedValue(new Error('network unavailable'));
+
+      const refresh = middleware.refreshRateLimits();
+      const rejection = expect(refresh).rejects.toThrow('after 3 attempts');
+      await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(500);
+      await rejection;
+      expect(fetch).toHaveBeenCalledTimes(4);
+      expect(worker).toMatchObject(previous);
+    } finally {
+      await middleware.destroy();
+      fetch.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test('should reject malformed HTTP, JSON, and resource responses', async () => {
+    const invalidResponses = [
+      rateLimitResponse(undefined, StatusCodes.BAD_GATEWAY),
+      {
+        status: StatusCodes.OK,
+        json: async () => {
+          throw new Error('invalid json');
+        }
+      } as unknown as globalThis.Response,
+      rateLimitResponse({ core: { remaining: 1, reset: 2000000000 } })
+    ];
+
+    for (const invalidResponse of invalidResponses) {
+      const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(rateLimitResponse());
+      const middleware = new Middleware([FAKE_TOKEN]);
+      try {
+        await new Promise((resolve) => middleware.once('ready', resolve));
+        fetch.mockResolvedValue(invalidResponse);
+        const refresh = middleware.refreshRateLimits();
+        await expect(refresh).rejects.toThrow('Rate-limit refresh failed');
+      } finally {
+        await middleware.destroy();
+        fetch.mockRestore();
+      }
+    }
+  });
+
+  test('should contain refresh failures when destroyed during a retry', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network unavailable'));
+    const middleware = new Middleware([FAKE_TOKEN]);
+
+    try {
+      const refresh = middleware.refreshRateLimits();
+      await vi.advanceTimersByTimeAsync(250);
+      await middleware.destroy();
+      await expect(refresh).resolves.toBeUndefined();
+    } finally {
+      fetch.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test('should abort a never-settling refresh when destroyed', async () => {
+    let signal: AbortSignal | undefined;
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<globalThis.Response>(() => undefined);
+    });
+    const middleware = new Middleware([FAKE_TOKEN]);
+
+    try {
+      await middleware.destroy();
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  test('should stop removed-token retries without later fetches or diagnostics', async () => {
+    vi.useFakeTimers();
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(rateLimitResponse())
+      .mockRejectedValue(new Error('network unavailable'));
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const errors = vi.fn();
+    middleware.on('error', errors);
+
+    try {
+      await new Promise((resolve) => middleware.once('ready', resolve));
+      const refresh = middleware.refreshRateLimits();
+      await Promise.resolve();
+      await Promise.resolve();
+      await middleware.removeToken(FAKE_TOKEN);
+      await expect(refresh).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      await middleware.destroy();
+      fetch.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test('should recover after a retry succeeds', async () => {
+    vi.useFakeTimers();
+    const recovered = rateLimitResponse({
+      core: { limit: 5000, remaining: 1234, reset: 2000000100 },
+      search: { limit: 30, remaining: 20, reset: 2000000100 },
+      code_search: { limit: 10, remaining: 7, reset: 2000000100 },
+      graphql: { limit: 5000, remaining: 4321, reset: 2000000100 }
+    });
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(rateLimitResponse())
+      .mockRejectedValueOnce(new Error('temporary outage'))
+      .mockResolvedValueOnce(recovered);
+    const middleware = new Middleware([FAKE_TOKEN]);
+
+    try {
+      await new Promise((resolve) => middleware.once('ready', resolve));
+      const refresh = middleware.refreshRateLimits();
+      const success = expect(refresh).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(250);
+      await success;
+
+      const worker = (
+        middleware as unknown as {
+          workersByResource: { core: Array<{ remaining: number; reset: number }> };
+        }
+      ).workersByResource.core[0];
+      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(worker).toMatchObject({ remaining: 1234, reset: 2000000100 });
+    } finally {
+      await middleware.destroy();
+      fetch.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test('should perform one refresh fetch per token across multiple tokens', async () => {
+    const firstToken = `${repeat('a', 39)}0`;
+    const secondToken = `${repeat('b', 39)}1`;
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(rateLimitResponse());
+    const middleware = new Middleware([firstToken, secondToken]);
+
+    try {
+      await middleware.refreshRateLimits();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch.mock.calls.map(([, init]) => init?.headers)).toEqual([
+        expect.objectContaining({ authorization: `token ${firstToken}` }),
+        expect.objectContaining({ authorization: `token ${secondToken}` })
+      ]);
+    } finally {
+      await middleware.destroy();
+      fetch.mockRestore();
+    }
+  });
+});
+
 describe('Middleware core', () => {
   let scope: nock.Scope;
   let middleware: Middleware;
@@ -351,6 +590,7 @@ describe('Middleware core', () => {
         .reduce((memo: Record<string, number>, token) => ({ ...memo, [token]: 0 }), {});
 
       for (const token of Object.keys(tokens)) {
+        if (middleware.tokens.includes(token)) continue;
         middleware.addToken(token);
         await new Promise((resolve) => middleware.once('ready', resolve));
       }
@@ -420,7 +660,7 @@ describe('Middleware core', () => {
         .times(4)
         .reply(StatusCodes.UNAUTHORIZED);
 
-      await middleware.refreshRateLimits();
+      await expect(middleware.refreshRateLimits()).rejects.toThrow('Rate-limit refresh failed');
 
       expect(errors.join('\n')).not.toContain(FAKE_TOKEN);
       expect(errors.join('\n')).toContain(FAKE_TOKEN.slice(-4));
