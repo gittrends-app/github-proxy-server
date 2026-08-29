@@ -1,13 +1,13 @@
 ---
 id: 07
 title: Fix worker and router lifecycle leaks
-status: planned
+status: verified
 risk: low/moderate
 urgency: normal
 scope: worker timers, queues, agents, listeners, and shutdown
 ---
 
-**Status:** Planned; not yet implemented.
+**Status:** Verified; review and final validation are complete.
 
 ## Problem
 
@@ -22,6 +22,23 @@ destruction mutates the collection being traversed.
 - Each worker creates its own Agent at `src/router.ts:101-112`.
 - The global listener limit is raised at `src/cli.ts:90`.
 - CLI shutdown currently closes only the server at `src/cli.ts:152-161`.
+
+## Implementation evidence
+
+- `src/router.ts` now owns token records, resource queues, worker wiring, refresh timer handles, and
+  cached asynchronous destruction; workers explicitly settle scheduled tasks, pause and clear
+  queues, clear timers, destroy their Undici Agents, detach references, and terminate responses.
+- Concurrent token removal and router destruction are composed, while refresh and error forwarding
+  paths remain contained for routers without error listeners and disposal failures are aggregated;
+  the public manual refresh method retains its reject-on-failure/readiness contract.
+- `src/server.ts` exposes an idempotent asynchronous `app.destroy()` that delegates to the hidden
+  router.
+- `src/cli.ts` removes the global listener-limit override and performs single-flight, named signal
+  shutdown by starting HTTP close before router cleanup and awaiting both, including listen-error
+  startup cleanup.
+- Focused lifecycle coverage was added to `src/router.spec.ts`, `src/server.spec.ts`, and
+  `src/cli.spec.ts`.
+- Final validation: Yarn lint, TypeScript, all 129 tests, and production build passed.
 
 ## Expected benefit
 

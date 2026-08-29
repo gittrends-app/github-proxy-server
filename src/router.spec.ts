@@ -1,10 +1,10 @@
-import express, { type Express } from 'express';
+import express, { type Express, type Request, type Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import repeat from 'lodash/repeat.js';
 import times from 'lodash/times.js';
 import nock from 'nock';
 import request from 'supertest';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import Middleware from './router';
 
@@ -36,20 +36,143 @@ describe('Middleware constructor and methods', () => {
     expect(() => new Middleware([])).toThrowError();
   });
 
-  test('it should remove/add tokens', () => {
+  test('it should remove/add tokens', async () => {
     const middleware = new Middleware([FAKE_TOKEN]);
     expect(middleware.tokens).toHaveLength(1);
 
-    middleware.removeToken(FAKE_TOKEN);
+    await middleware.removeToken(FAKE_TOKEN);
     expect(middleware.tokens).toHaveLength(0);
 
     middleware.addToken(FAKE_TOKEN);
     expect(middleware.tokens).toHaveLength(1);
+    return middleware.destroy();
   });
 
-  test('it should create only one client per token', () => {
+  test('it should create only one client per token', async () => {
     const middleware = new Middleware(times(2, () => FAKE_TOKEN));
     expect(middleware.tokens).toHaveLength(1);
+    await middleware.destroy();
+  });
+
+  test('it should destroy every token and its lifecycle timers exactly once', async () => {
+    vi.useFakeTimers();
+    try {
+      const middleware = new Middleware(times(3, (index) => `${repeat('t', 39)}${index}`));
+
+      const timerCount = vi.getTimerCount();
+      expect(timerCount).toBeGreaterThan(0);
+
+      const destruction = middleware.destroy();
+      expect(middleware.destroy()).toBe(destruction);
+      await destruction;
+
+      expect(middleware.tokens).toEqual([]);
+      expect(vi.getTimerCount()).toBeLessThan(timerCount);
+
+      middleware.addToken(FAKE_TOKEN);
+      expect(middleware.tokens).toEqual([]);
+      await middleware.removeToken('missing-token');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('it should terminate queued responses and ignore work after destroy', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 5000 });
+    const response = {
+      destroyed: false,
+      destroy: vi.fn(),
+      writableEnded: false
+    } as unknown as Response;
+
+    await middleware.schedule({ method: 'GET', path: '/' } as Request, response);
+    await middleware.destroy();
+
+    expect(response.destroy).toHaveBeenCalledTimes(1);
+
+    await middleware.schedule({ method: 'GET', path: '/' } as Request, response);
+    expect(response.destroy).toHaveBeenCalledTimes(2);
+  });
+
+  test('it should settle worker schedule promises cleared during destruction', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 0 });
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            proxy: { proxy: (...args: never[]) => Promise<void> };
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 1000;
+    worker.reset = 0;
+
+    vi.spyOn(worker.proxy, 'proxy').mockImplementation(() => new Promise<void>(() => undefined));
+
+    const requests = times(11, () => {
+      const request = {
+        headers: {},
+        method: 'GET',
+        path: '/',
+        socket: { destroyed: false, writableFinished: false }
+      } as unknown as Request;
+      const response = {
+        destroy: vi.fn(),
+        destroyed: false,
+        writableEnded: false
+      } as unknown as Response;
+      return { request, response };
+    });
+
+    const schedules = requests.map(({ request, response }) => worker.schedule(request, response));
+    const destruction = middleware.destroy();
+
+    await expect(Promise.all(schedules)).resolves.toHaveLength(11);
+    await destruction;
+    requests.forEach(({ response }) => expect(response.destroy).toHaveBeenCalled());
+  });
+
+  test('it should await concurrent token removal during router destruction', async () => {
+    const firstToken = `${repeat('a', 39)}0`;
+    const secondToken = `${repeat('a', 39)}1`;
+    const middleware = new Middleware([firstToken, secondToken]);
+    const removal = middleware.removeToken(firstToken);
+    const destruction = middleware.destroy();
+
+    await Promise.all([removal, destruction]);
+    expect(middleware.tokens).toEqual([]);
+  });
+
+  test('it should aggregate Agent destruction failures after attempting every worker', async () => {
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const worker = (
+      middleware as unknown as {
+        workersByResource: { core: Array<{ agent: { destroy: () => Promise<void> } }> };
+      }
+    ).workersByResource.core[0];
+    vi.spyOn(worker.agent, 'destroy').mockRejectedValue(new Error('agent cleanup failed'));
+
+    await expect(middleware.destroy()).rejects.toThrow('agent cleanup failed');
+    await expect(middleware.destroy()).rejects.toThrow('agent cleanup failed');
+  });
+
+  test('manual refresh should reject and not emit ready when a worker refresh fails', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('refresh failed'));
+    const middleware = new Middleware([FAKE_TOKEN]);
+    const ready = vi.fn();
+    middleware.on('ready', ready);
+
+    try {
+      await expect(middleware.refreshRateLimits()).rejects.toThrow('refresh failed');
+      expect(ready).not.toHaveBeenCalled();
+    } finally {
+      await middleware.destroy();
+      fetch.mockRestore();
+    }
   });
 });
 
@@ -91,7 +214,7 @@ describe('Middleware core', () => {
     nock.cleanAll();
     nock.restore();
 
-    middleware.destroy();
+    await middleware.destroy();
   });
 
   afterAll(() => {
@@ -220,7 +343,7 @@ describe('Middleware core', () => {
 
       Object.values(tokens).forEach((calls) => expect(calls).toBeGreaterThan(0));
 
-      Object.keys(tokens).forEach((token) => middleware.removeToken(token));
+      await Promise.all(Object.keys(tokens).map((token) => middleware.removeToken(token)));
     });
 
     test('it should not forward ratelimit and scope information', async () => {
@@ -254,12 +377,12 @@ describe('Middleware core', () => {
       await request(app).get('/').expect(200);
       await request(app).get('/user').expect(200);
 
-      middleware.removeToken(FAKE_TOKEN);
+      await middleware.removeToken(FAKE_TOKEN);
       middleware.addToken(repeat('i', 40));
 
       await request(app).get('/user').expect(401);
 
-      middleware.removeToken(repeat('i', 40));
+      await middleware.removeToken(repeat('i', 40));
       middleware.addToken(repeat('j', 40));
 
       await request(app).get('/user').expect(401);
@@ -302,7 +425,7 @@ describe('Middleware core', () => {
       await request(app).get('/').set('Authorization', tokenStr).expect(401);
       await request(app).get('/').expect(200);
 
-      middleware.destroy();
+      await middleware.destroy();
       middleware = new Middleware([FAKE_TOKEN], {
         requestTimeout,
         minRemaining: 0,

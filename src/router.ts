@@ -22,6 +22,22 @@ type ExtendedRequest = Request & {
 
 type APIResources = 'core' | 'search' | 'code_search' | 'graphql';
 
+type ScheduledRequest = QueuedRequest & {
+  settle: () => void;
+};
+
+function disposalError(errors: unknown[], message: string): Error | undefined {
+  if (!errors.length) return undefined;
+  if (errors.length === 1) {
+    return errors[0] instanceof Error ? errors[0] : new Error(String(errors[0]));
+  }
+  return new AggregateError(errors, message);
+}
+
+function terminateResponse(res: Response): void {
+  if (!res.writableEnded && !res.destroyed) res.destroy();
+}
+
 export interface WorkerLogger {
   resource: APIResources;
   token: string;
@@ -53,11 +69,24 @@ class ProxyWorker extends EventEmitter {
   readonly schedule;
 
   private readonly opts: ProxyRouterOpts;
+  private readonly agent: Agent;
+  private readonly scheduledRequests = new Set<ScheduledRequest>();
   private router?: ProxyRouter;
   private resourceQueue?: RequestQueue;
   private pullInterval?: NodeJS.Timeout;
   private _budgetResetInterval?: NodeJS.Timeout;
   private checkForWork?: () => Promise<void>;
+  private destroyed = false;
+  private destroyPromise?: Promise<void>;
+
+  private emitError(error: unknown, token?: string): void {
+    if (!this.listenerCount('error')) return;
+    try {
+      this.emit('error', error, token);
+    } catch {
+      // Error listeners must not turn refresh failures into unhandled rejections.
+    }
+  }
 
   readonly defaults: {
     resource: APIResources;
@@ -98,17 +127,19 @@ class ProxyWorker extends EventEmitter {
         (this.defaults.resource === 'graphql' ? 60000 : 90000) * (opts.timeBudgetMultiplier || 1);
     }, 60000).unref();
 
+    this.agent = new Agent({
+      connections: 20,
+      pipelining: 1,
+      keepAliveTimeout: 60000,
+      keepAliveMaxTimeout: 600000,
+      headersTimeout: opts.requestTimeout,
+      bodyTimeout: opts.requestTimeout
+    });
+
     this.proxy = new ProxyClient({
       target: 'https://api.github.com',
       timeout: opts.requestTimeout,
-      dispatcher: new Agent({
-        connections: 20,
-        pipelining: 1,
-        keepAliveTimeout: 60000,
-        keepAliveMaxTimeout: 600000,
-        headersTimeout: opts.requestTimeout,
-        bodyTimeout: opts.requestTimeout
-      })
+      dispatcher: this.agent
     });
 
     let maxConcurrent = 1;
@@ -117,117 +148,153 @@ class ProxyWorker extends EventEmitter {
     this.queue = new PQueue({ concurrency: maxConcurrent });
 
     this.schedule = async (req: ExtendedRequest, res: Response): Promise<void> => {
-      return this.queue.add(async () => {
-        try {
-          if (req.socket.destroyed) {
-            this.log();
-            return;
-          }
+      if (this.destroyed) {
+        terminateResponse(res);
+        return;
+      }
 
-          const noTimeBudget = this.timeBudget < this.queue.pending * 1000;
-          const noRequests =
-            this.remaining <= opts.minRemaining && this.reset >= Math.floor(Date.now() / 1000);
-
-          if (noTimeBudget || noRequests) {
-            this.emit('retry', req, res);
-            return;
-          }
-
-          req.startedAt = new Date();
-          this.remaining -= 1;
-
-          const hasAuthorization = opts.overrideAuthorization ? false : !!req.headers.authorization;
-
-          await this.proxy.proxy(req, res, {
-            modifyHeaders: (headers) => {
-              if (!hasAuthorization) headers.authorization = `token ${token}`;
-              return headers;
-            },
-            onResponse: async (data) => {
-              const linkHeader = data.headers.link;
-              if (linkHeader && req.headers.host) {
-                data.headers.link = linkHeader.replaceAll(
-                  'https://api.github.com',
-                  `http://${req.headers.host}`
-                );
-              }
-
-              // Only update rate limits if we injected the token
-              if (!hasAuthorization) {
-                const status = data.status.toString();
-                const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
-                const rateLimitReset = data.headers['x-ratelimit-reset'];
-                const rateLimitLimit = data.headers['x-ratelimit-limit'];
-
-                if (rateLimitRemaining) {
-                  this.updateLimits({
-                    status,
-                    'x-ratelimit-remaining': rateLimitRemaining,
-                    'x-ratelimit-reset': rateLimitReset || '',
-                    'x-ratelimit-limit': rateLimitLimit || ''
-                  });
-                }
-
-                this.timeBudget -= Date.now() - (req.startedAt?.getTime() || 1000);
-
-                this.log(data.status, req.startedAt);
-
-                // Remove rate limit and scope headers
-                for (const key of Object.keys(data.headers)) {
-                  if (/(ratelimit|scope)/i.test(key)) {
-                    delete data.headers[key];
-                  }
-                }
-
-                const exposeHeaders = data.headers['access-control-expose-headers'];
-                if (exposeHeaders) {
-                  const filtered = exposeHeaders
-                    .split(', ')
-                    .filter((header) => !/(ratelimit|scope)/i.test(header))
-                    .join(', ');
-                  if (filtered) {
-                    data.headers['access-control-expose-headers'] = filtered;
-                  } else {
-                    delete data.headers['access-control-expose-headers'];
-                  }
-                }
-              }
-            }
-          });
-        } catch (error) {
-          const err = error as Error & { code?: string };
-          const errorCode = err.code || err.message;
-          this.log(
-            errorCode === 'ETIMEDOUT' ? 'ETIMEDOUT' : ProxyRouterResponse.PROXY_ERROR,
-            req.startedAt
-          );
-
-          if (!req.socket.destroyed && !req.socket.writableFinished) {
-            res.status(StatusCodes.BAD_GATEWAY).send();
-          }
-
-          req.abortController?.abort();
-          res.destroy();
-        }
+      let settleTask!: () => void;
+      const completion = new Promise<void>((resolve) => {
+        settleTask = resolve;
       });
+      const scheduledRequest = { req, res, settle: settleTask };
+      this.scheduledRequests.add(scheduledRequest);
+
+      try {
+        void this.queue
+          .add(async () => {
+            try {
+              if (this.destroyed || req.socket.destroyed) {
+                this.log();
+                return;
+              }
+
+              const noTimeBudget = this.timeBudget < this.queue.pending * 1000;
+              const noRequests =
+                this.remaining <= opts.minRemaining && this.reset >= Math.floor(Date.now() / 1000);
+
+              if (noTimeBudget || noRequests) {
+                this.emit('retry', req, res);
+                return;
+              }
+
+              req.startedAt = new Date();
+              this.remaining -= 1;
+
+              const hasAuthorization = opts.overrideAuthorization
+                ? false
+                : !!req.headers.authorization;
+
+              await this.proxy.proxy(req, res, {
+                modifyHeaders: (headers) => {
+                  if (!hasAuthorization) headers.authorization = `token ${token}`;
+                  return headers;
+                },
+                onResponse: async (data) => {
+                  if (this.destroyed) return;
+
+                  const linkHeader = data.headers.link;
+                  if (linkHeader && req.headers.host) {
+                    data.headers.link = linkHeader.replaceAll(
+                      'https://api.github.com',
+                      `http://${req.headers.host}`
+                    );
+                  }
+
+                  // Only update rate limits if we injected the token
+                  if (!hasAuthorization) {
+                    const status = data.status.toString();
+                    const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
+                    const rateLimitReset = data.headers['x-ratelimit-reset'];
+                    const rateLimitLimit = data.headers['x-ratelimit-limit'];
+
+                    if (rateLimitRemaining) {
+                      this.updateLimits({
+                        status,
+                        'x-ratelimit-remaining': rateLimitRemaining,
+                        'x-ratelimit-reset': rateLimitReset || '',
+                        'x-ratelimit-limit': rateLimitLimit || ''
+                      });
+                    }
+
+                    this.timeBudget -= Date.now() - (req.startedAt?.getTime() || 1000);
+
+                    this.log(data.status, req.startedAt);
+
+                    // Remove rate limit and scope headers
+                    for (const key of Object.keys(data.headers)) {
+                      if (/(ratelimit|scope)/i.test(key)) {
+                        delete data.headers[key];
+                      }
+                    }
+
+                    const exposeHeaders = data.headers['access-control-expose-headers'];
+                    if (exposeHeaders) {
+                      const filtered = exposeHeaders
+                        .split(', ')
+                        .filter((header) => !/(ratelimit|scope)/i.test(header))
+                        .join(', ');
+                      if (filtered) {
+                        data.headers['access-control-expose-headers'] = filtered;
+                      } else {
+                        delete data.headers['access-control-expose-headers'];
+                      }
+                    }
+                  }
+                }
+              });
+            } catch (error) {
+              const err = error as Error & { code?: string };
+              const errorCode = err.code || err.message;
+              this.log(
+                errorCode === 'ETIMEDOUT' ? 'ETIMEDOUT' : ProxyRouterResponse.PROXY_ERROR,
+                req.startedAt
+              );
+
+              if (!req.socket.destroyed && !req.socket.writableFinished && !res.destroyed) {
+                res.status(StatusCodes.BAD_GATEWAY).send();
+              }
+
+              req.abortController?.abort();
+              terminateResponse(res);
+            } finally {
+              this.scheduledRequests.delete(scheduledRequest);
+              settleTask();
+            }
+          })
+          .catch(() => {
+            this.scheduledRequests.delete(scheduledRequest);
+            settleTask();
+          });
+        await completion;
+      } catch {
+        this.scheduledRequests.delete(scheduledRequest);
+        settleTask();
+      }
     };
   }
 
   public async refreshRateLimits(): Promise<void> {
+    if (this.destroyed) return;
+
     await fetch('https://api.github.com/rate_limit', {
       headers: {
         authorization: `token ${this.token}`,
         'user-agent': 'GitHub API Proxy Server (@hsborges/github-proxy-server)'
       }
     }).then(async (response) => {
+      if (this.destroyed) return;
+
       if (response.status === 401) {
         this.remaining = 0;
         this.reset = Number.POSITIVE_INFINITY;
-        this.emit('error', `Invalid token detected (${this.token.slice(-4)}).`, this.token);
+        this.emitError(`Invalid token detected (${this.token.slice(-4)}).`, this.token);
       } else {
         const res = (await response.json()) as {
           resources: Record<string, { remaining: number; reset: number }>;
         };
+        if (this.destroyed) return;
+
         this.remaining = res.resources[this.defaults.resource].remaining;
         this.reset = res.resources[this.defaults.resource].reset;
         this.log(undefined, new Date());
@@ -247,6 +314,8 @@ class ProxyWorker extends EventEmitter {
   }
 
   private log(status?: number | string, startedAt?: Date): void {
+    if (this.destroyed) return;
+
     this.emit('log', {
       resource: this.defaults.resource,
       token: this.token.slice(-4),
@@ -260,6 +329,8 @@ class ProxyWorker extends EventEmitter {
   }
 
   canAcceptWork(): boolean {
+    if (this.destroyed) return false;
+
     return (
       this.queue.pending < (this.queue.concurrency ?? 1) &&
       this.timeBudget >= this.queue.pending * 1000 &&
@@ -268,16 +339,18 @@ class ProxyWorker extends EventEmitter {
   }
 
   setRouter(router: ProxyRouter): void {
+    if (this.destroyed) return;
+
     this.router = router;
     this.resourceQueue = router.getQueue(this.defaults.resource);
     this.startPullLoop();
   }
 
   private startPullLoop(): void {
-    if (!this.router || !this.resourceQueue) return;
+    if (this.destroyed || !this.router || !this.resourceQueue) return;
 
     this.checkForWork = async () => {
-      if (!this.canAcceptWork() || !this.resourceQueue) return;
+      if (this.destroyed || !this.canAcceptWork() || !this.resourceQueue) return;
       const work = this.resourceQueue.dequeue();
       if (work) await this.schedule(work.req, work.res);
     };
@@ -286,15 +359,51 @@ class ProxyWorker extends EventEmitter {
     this.pullInterval = setInterval(this.checkForWork, 100).unref();
   }
 
-  destroy(): this {
+  get isDestroyed(): boolean {
+    return this.destroyed;
+  }
+
+  destroy(): Promise<void> {
+    if (this.destroyPromise) return this.destroyPromise;
+
+    this.destroyed = true;
+    this.queue.pause();
     this.queue.clear();
-    if (this.pullInterval) {
-      clearInterval(this.pullInterval);
-    }
-    if (this._budgetResetInterval) {
-      clearInterval(this._budgetResetInterval);
-    }
-    return this;
+
+    if (this.pullInterval) clearInterval(this.pullInterval);
+    if (this._budgetResetInterval) clearInterval(this._budgetResetInterval);
+    this.pullInterval = undefined;
+    this._budgetResetInterval = undefined;
+
+    this.router = undefined;
+    this.resourceQueue = undefined;
+    this.checkForWork = undefined;
+    this.removeAllListeners();
+
+    this.destroyPromise = (async () => {
+      const errors: unknown[] = [];
+
+      for (const { res, settle } of this.scheduledRequests) {
+        try {
+          terminateResponse(res);
+        } catch (error) {
+          errors.push(error);
+        } finally {
+          settle();
+        }
+      }
+      this.scheduledRequests.clear();
+
+      try {
+        await this.agent.destroy();
+      } catch (error) {
+        errors.push(error);
+      }
+
+      const error = disposalError(errors, 'Proxy worker destruction failed');
+      if (error) throw error;
+    })();
+    return this.destroyPromise;
   }
 }
 
@@ -334,7 +443,21 @@ export default class ProxyRouter extends EventEmitter {
     search: ProxyWorker;
     code_search: ProxyWorker;
     graphql: ProxyWorker;
+    refreshTimers: NodeJS.Timeout[];
   }>;
+
+  private destroyed = false;
+  private destroyPromise?: Promise<void>;
+  private readonly removals = new Set<Promise<void>>();
+
+  private emitError(error: unknown): void {
+    if (!this.listenerCount('error')) return;
+    try {
+      this.emit('error', error);
+    } catch {
+      // Error listeners must not turn cleanup failures into unhandled exceptions.
+    }
+  }
 
   // Cache worker arrays to avoid repeated map() calls
   private readonly workersByResource: {
@@ -369,6 +492,11 @@ export default class ProxyRouter extends EventEmitter {
   }
 
   async schedule(req: Request, res: Response): Promise<void> {
+    if (this.destroyed) {
+      terminateResponse(res);
+      return;
+    }
+
     const isGraphQL = req.path.startsWith('/graphql') && req.method === 'POST';
     const isCodeSearch = req.path.startsWith('/search/code');
     const isSearch = req.path.startsWith('/search');
@@ -389,6 +517,7 @@ export default class ProxyRouter extends EventEmitter {
   }
 
   addToken(token: string): void {
+    if (this.destroyed) return;
     if (this.clients.map((client) => client.token).includes(token)) return;
 
     const core = new ProxyWorker(token, { ...this.options, resource: 'core' });
@@ -396,19 +525,46 @@ export default class ProxyRouter extends EventEmitter {
     const codeSearch = new ProxyWorker(token, { ...this.options, resource: 'code_search' });
     const graphql = new ProxyWorker(token, { ...this.options, resource: 'graphql' });
 
-    for (const worker of [core, search, codeSearch, graphql]) {
-      worker.on('error', (error: unknown) => this.emit('error', error));
+    const workers = [core, search, codeSearch, graphql];
+    const refreshTimers: NodeJS.Timeout[] = [];
+
+    for (const worker of workers) {
+      worker.on('error', (error: unknown) => this.emitError(error));
       worker.on('retry', (req: ExtendedRequest, res: Response) => this.schedule(req, res));
       worker.on('log', (log: WorkerLogger) => this.emit('log', log));
       worker.on('warn', (message: string) => this.emit('warn', message));
-      worker.refreshRateLimits().then(() => this.emit('ready'));
+      void worker
+        .refreshRateLimits()
+        .then(() => {
+          if (!this.destroyed && !worker.isDestroyed) this.emit('ready');
+        })
+        .catch((error: unknown) => {
+          if (!this.destroyed && !worker.isDestroyed) this.emitError(error);
+        });
       // Auto-refresh rate limits every 15 minutes
-      setInterval(() => worker.refreshRateLimits(), 15 * 60 * 1000).unref();
+      refreshTimers.push(
+        setInterval(
+          () => {
+            if (this.destroyed || worker.isDestroyed) return;
+            void worker.refreshRateLimits().catch((error: unknown) => {
+              if (!this.destroyed && !worker.isDestroyed) this.emitError(error);
+            });
+          },
+          15 * 60 * 1000
+        ).unref()
+      );
       // Phase 3: Set router reference to enable pull mechanism
       worker.setRouter(this);
     }
 
-    this.clients.push({ token, core, search, code_search: codeSearch, graphql });
+    this.clients.push({
+      token,
+      core,
+      search,
+      code_search: codeSearch,
+      graphql,
+      refreshTimers
+    });
 
     // Update worker caches
     this.workersByResource.core.push(core);
@@ -417,49 +573,104 @@ export default class ProxyRouter extends EventEmitter {
     this.workersByResource.graphql.push(graphql);
   }
 
-  removeToken(token: string): void {
+  private async destroyClient(client: (typeof this.clients)[number]): Promise<void> {
+    const workers = [client.core, client.search, client.code_search, client.graphql];
+    for (const timer of client.refreshTimers) clearInterval(timer);
+
+    const results = await Promise.allSettled(workers.map((worker) => worker.destroy()));
+    const errors = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+
+    const cacheEntries: Array<[ProxyWorker[], ProxyWorker]> = [
+      [this.workersByResource.core, client.core],
+      [this.workersByResource.search, client.search],
+      [this.workersByResource.code_search, client.code_search],
+      [this.workersByResource.graphql, client.graphql]
+    ];
+    for (const [workersByResource, worker] of cacheEntries) {
+      const workerIndex = workersByResource.indexOf(worker);
+      if (workerIndex !== -1) workersByResource.splice(workerIndex, 1);
+      worker.removeAllListeners();
+    }
+
+    const error = disposalError(errors, 'Proxy token destruction failed');
+    if (error) throw error;
+  }
+
+  removeToken(token: string): Promise<void> {
+    if (this.destroyed) return this.destroyPromise ?? Promise.resolve();
+
     const index = this.clients.map((c) => c.token).indexOf(token);
-    if (index === -1) return;
+    if (index === -1) return Promise.resolve();
 
-    const removed = this.clients.splice(index, 1);
-    removed.forEach((client) => {
-      for (const worker of [client.core, client.search, client.code_search, client.graphql]) {
-        worker.destroy();
-      }
-
-      // Update worker caches
-      const coreIndex = this.workersByResource.core.indexOf(client.core);
-      if (coreIndex !== -1) this.workersByResource.core.splice(coreIndex, 1);
-
-      const searchIndex = this.workersByResource.search.indexOf(client.search);
-      if (searchIndex !== -1) this.workersByResource.search.splice(searchIndex, 1);
-
-      const codeSearchIndex = this.workersByResource.code_search.indexOf(client.code_search);
-      if (codeSearchIndex !== -1) this.workersByResource.code_search.splice(codeSearchIndex, 1);
-
-      const graphqlIndex = this.workersByResource.graphql.indexOf(client.graphql);
-      if (graphqlIndex !== -1) this.workersByResource.graphql.splice(graphqlIndex, 1);
-    });
+    const client = this.clients.splice(index, 1)[0];
+    const removal = this.destroyClient(client);
+    this.removals.add(removal);
+    void removal.then(
+      () => this.removals.delete(removal),
+      () => this.removals.delete(removal)
+    );
+    return removal;
   }
 
   async refreshRateLimits(): Promise<void> {
+    if (this.destroyed) return;
+
+    const clients = [...this.clients];
     await Promise.all(
-      this.clients.map((client) =>
+      clients.map((client) =>
         Promise.all(
-          [client.core, client.search, client.code_search, client.graphql].map((w) =>
-            w.refreshRateLimits()
+          [client.core, client.search, client.code_search, client.graphql].map((worker) =>
+            worker.refreshRateLimits()
           )
         )
       )
-    ).then(() => this.emit('ready'));
+    );
+    if (!this.destroyed) this.emit('ready');
   }
 
   get tokens(): string[] {
     return this.clients.map((client) => client.token);
   }
 
-  destroy(): this {
-    this.clients.forEach((client) => this.removeToken(client.token));
-    return this;
+  destroy(): Promise<void> {
+    if (this.destroyPromise) return this.destroyPromise;
+
+    this.destroyed = true;
+
+    const clients = this.clients.splice(0);
+    const removals = [...this.removals];
+
+    this.destroyPromise = (async () => {
+      const errors: unknown[] = [];
+      for (const queue of Object.values(this.queues)) {
+        let work = queue.dequeue();
+        while (work) {
+          try {
+            terminateResponse(work.res);
+          } catch (error) {
+            errors.push(error);
+          }
+          work = queue.dequeue();
+        }
+      }
+
+      const results = await Promise.allSettled([
+        ...clients.map((client) => this.destroyClient(client)),
+        ...removals
+      ]);
+      for (const result of results) {
+        if (result.status === 'rejected') errors.push(result.reason);
+      }
+
+      for (const workers of Object.values(this.workersByResource)) workers.length = 0;
+      this.removeAllListeners();
+
+      const error = disposalError(errors, 'Proxy router destruction failed');
+      if (error) throw error;
+    })();
+
+    return this.destroyPromise;
   }
 }

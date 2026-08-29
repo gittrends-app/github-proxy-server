@@ -6,9 +6,21 @@ import times from 'lodash/times.js';
 import nock from 'nock';
 import request from 'supertest';
 import { withFile } from 'tmp-promise';
-import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 
 import { type CliOpts, createProxyServer, parseTokens, readTokensFile } from './server.js';
+
+const createdApps: Array<ReturnType<typeof createProxyServer>> = [];
+
+function createTestApp(options: CliOpts): ReturnType<typeof createProxyServer> {
+  const app = createProxyServer(options);
+  createdApps.push(app);
+  return app;
+}
+
+afterEach(async () => {
+  await Promise.all(createdApps.splice(0).map((app) => app.destroy()));
+});
 
 describe('Test tokens file parser', () => {
   test('it should check tokens length', () => {
@@ -98,8 +110,16 @@ describe('Test create proxy server', () => {
     expect(() => createProxyServer(params)).toThrowError();
   });
 
+  test('it should expose an idempotent asynchronous app destroy method', async () => {
+    const app = createTestApp(params);
+    const destruction = app.destroy();
+
+    expect(app.destroy()).toBe(destruction);
+    await destruction;
+  });
+
   test('it should accept GET requests and reject unsupported methods', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).get('/').expect(StatusCodes.OK);
 
     for (const method of ['post', 'patch', 'put', 'delete'] as const) {
@@ -111,12 +131,12 @@ describe('Test create proxy server', () => {
   });
 
   test('it should accept POSTs only to /graphql', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).post('/graphql').expect(StatusCodes.OK);
   });
 
   test('it should emit logs when enabled', async () => {
-    const app = createProxyServer({ ...params, silent: false });
+    const app = createTestApp({ ...params, silent: false });
 
     const logs: string[] = [];
     app.on('log', (data) => logs.push(data.toString()));
@@ -130,7 +150,7 @@ describe('Test create proxy server', () => {
   });
 
   test('it should not emit logs when disabled', async () => {
-    const app = createProxyServer({ ...params, silent: true });
+    const app = createTestApp({ ...params, silent: true });
 
     const logs: string[] = [];
     app.on('log', (data) => logs.push(data.toString()));
@@ -140,7 +160,7 @@ describe('Test create proxy server', () => {
   });
 
   test('it should emit an error when invalid token are detected', async () => {
-    const app = createProxyServer({ ...params, tokens: [repeat('i', 40)] });
+    const app = createTestApp({ ...params, tokens: [repeat('i', 40)] });
 
     const errors: string[] = [];
     app.on('error', (data) => errors.push(data.toString()));
@@ -150,7 +170,7 @@ describe('Test create proxy server', () => {
   });
 
   test('it should not pass authorization tokens by default', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
 
     await request(app)
       .get('/user')
@@ -160,7 +180,7 @@ describe('Test create proxy server', () => {
   });
 
   test('it should allow users to user own authorization tokens', async () => {
-    const app = createProxyServer({ ...params, overrideAuthorization: false });
+    const app = createTestApp({ ...params, overrideAuthorization: false });
 
     await request(app)
       .get('/user')
@@ -206,34 +226,34 @@ describe('Test proxy authentication', () => {
   });
 
   test('it should require authentication when auth is configured', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).get('/').expect(StatusCodes.UNAUTHORIZED);
     await request(app).post('/graphql').expect(StatusCodes.UNAUTHORIZED);
   });
 
   test('it should accept valid credentials', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).get('/').auth('testuser', 'testpass').expect(StatusCodes.OK);
   });
 
   test('it should reject invalid username', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).get('/').auth('wronguser', 'testpass').expect(StatusCodes.UNAUTHORIZED);
   });
 
   test('it should reject invalid password', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).get('/').auth('testuser', 'wrongpass').expect(StatusCodes.UNAUTHORIZED);
   });
 
   test('it should return WWW-Authenticate header on unauthorized', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     const response = await request(app).get('/').expect(StatusCodes.UNAUTHORIZED);
     expect(response.headers['www-authenticate']).toBe('Basic realm="GitHub Proxy Server"');
   });
 
   test('it should allow access to /status without authentication', async () => {
-    const app = createProxyServer({ ...params, statusMonitor: true });
+    const app = createTestApp({ ...params, statusMonitor: true });
     // /status endpoint redirects to /status/ - follow the redirect
     const response = await request(app).get('/status').redirects(1);
     expect(response.status).toBe(StatusCodes.OK);
@@ -244,12 +264,12 @@ describe('Test proxy authentication', () => {
   });
 
   test('it should work with POST /graphql when authenticated', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).post('/graphql').auth('testuser', 'testpass').expect(StatusCodes.OK);
   });
 
   test('it should not require auth when auth option is not provided', async () => {
-    const app = createProxyServer({ ...params, auth: undefined });
+    const app = createTestApp({ ...params, auth: undefined });
     await request(app).get('/').expect(StatusCodes.OK);
   });
 });

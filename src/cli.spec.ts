@@ -1,5 +1,6 @@
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import { unlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -64,6 +65,76 @@ describe('Test cli app', () => {
     expect(output).toContain(PARTIAL_AUTHENTICATION_ERROR);
     expect(output).not.toContain(password);
   });
+
+  test('it should destroy the router when a child receives SIGTERM', async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        '--import',
+        'tsx/esm',
+        'src/cli.ts',
+        '--no-status-monitor',
+        '-t',
+        '1234567890123456789012345678901234567890',
+        '-p',
+        '0'
+      ],
+      { cwd: process.cwd(), env: { ...process.env, FORCE_COLOR: '0' } }
+    );
+
+    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        let settled = false;
+        const timeout = setTimeout(() => {
+          if (!settled) {
+            child.kill('SIGKILL');
+            reject(new Error('CLI did not shut down in time'));
+          }
+        }, 10000);
+        const signalTimer = setTimeout(() => child.kill('SIGTERM'), 3000);
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          clearTimeout(signalTimer);
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
+        });
+        child.once('close', (code, signal) => {
+          clearTimeout(timeout);
+          clearTimeout(signalTimer);
+          if (!settled) {
+            settled = true;
+            resolve({ code, signal });
+          }
+        });
+      }
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.signal).toBeNull();
+  }, 15000);
+
+  test('it should clean up when the listen server emits an error', async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once('error', reject);
+      blocker.listen({ host: '0.0.0.0', port: 0 }, resolve);
+    });
+
+    try {
+      const address = blocker.address();
+      if (!address || typeof address === 'string') throw new Error('Unable to determine test port');
+
+      const result = await cli(
+        ['-t', '1234567890123456789012345678901234567890', '-p', `${address.port}`],
+        '.'
+      );
+      expect(result.code).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  }, 15000);
 });
 
 describe('CLI authentication configuration', () => {

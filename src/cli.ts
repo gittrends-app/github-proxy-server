@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 /* Author: Hudson S. Borges */
-import EventEmitter from 'node:events';
 import { pathToFileURL } from 'node:url';
 
 import chalk from 'chalk';
@@ -112,8 +111,6 @@ export function createCli(): Command {
         process.exit(1);
       }
 
-      EventEmitter.defaultMaxListeners = Number.MAX_SAFE_INTEGER;
-
       const tokens = [...options.token, ...(options.tokens || [])].reduce(
         (memo: string[], token: string) => concatTokens(token, memo),
         []
@@ -137,12 +134,10 @@ export function createCli(): Command {
         .on('warn', consola.warn)
         .on('error', consola.error);
 
-      const server = app.listen({ host: '0.0.0.0', port: options.port }, (error?: Error) => {
-        if (error) {
-          consola.error(error);
-          process.exit(1);
-        }
-
+      let startupReady = false;
+      const server = app.listen({ host: '0.0.0.0', port: options.port }, () => {
+        if (!server.listening) return;
+        startupReady = true;
         const host = `http://${ip.address()}:${options.port}`;
         consola.success(
           `Proxy server running on ${host} (tokens: ${chalk.greenBright(tokens.length)})`
@@ -168,24 +163,83 @@ export function createCli(): Command {
         );
       });
 
-      const shutdown = async () => {
-        server.close((err?: Error) => {
-          if (err) {
-            consola.error(err);
-            process.exit(1);
-          }
-
-          consola.success('Server closed');
-          process.exit(0);
+      const closeServer = (): Promise<void> => {
+        return new Promise<void>((resolve, reject) => {
+          server.close((error?: Error) => {
+            const code = (error as NodeJS.ErrnoException | undefined)?.code;
+            if (error && code !== 'ERR_SERVER_NOT_RUNNING') {
+              reject(error);
+            } else {
+              resolve();
+            }
+          });
         });
       };
 
-      ['SIGTERM', 'SIGINT'].forEach((signal) => {
-        process.on(signal, async () => {
-          consola.info(`${signal} signal received: closing HTTP server`);
-          await shutdown();
-        });
-      });
+      let shutdownPromise: Promise<void> | undefined;
+      let handleSigterm: () => void;
+      let handleSigint: () => void;
+
+      const removeSignalHandlers = (): void => {
+        process.off('SIGTERM', handleSigterm);
+        process.off('SIGINT', handleSigint);
+      };
+
+      const dispose = async (exitCode: number, announce: boolean): Promise<void> => {
+        // Start both operations before awaiting either so active requests can drain or abort.
+        const serverClose = closeServer();
+        const routerDestroy = app.destroy();
+        const results = await Promise.allSettled([serverClose, routerDestroy]);
+        const errors = results
+          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map((result) => result.reason);
+
+        removeSignalHandlers();
+        if (errors.length) {
+          consola.error(new AggregateError(errors, 'Proxy server shutdown failed'));
+          process.exit(1);
+          return;
+        }
+
+        if (announce) consola.success('Server closed');
+        process.exit(exitCode);
+      };
+
+      const shutdown = (): Promise<void> => {
+        if (shutdownPromise) return shutdownPromise;
+
+        shutdownPromise = dispose(0, true);
+
+        return shutdownPromise;
+      };
+
+      const cleanupStartupFailure = async (startupError: Error): Promise<void> => {
+        consola.error(startupError);
+        if (!shutdownPromise) shutdownPromise = dispose(1, false);
+        await shutdownPromise;
+      };
+
+      handleSigterm = (): void => {
+        consola.info('SIGTERM signal received: closing HTTP server');
+        void shutdown();
+      };
+
+      handleSigint = (): void => {
+        consola.info('SIGINT signal received: closing HTTP server');
+        void shutdown();
+      };
+
+      const handleServerError = (error: Error): void => {
+        if (startupReady && server.listening) {
+          consola.error(error);
+          return;
+        }
+        void cleanupStartupFailure(error);
+      };
+
+      server.on('error', handleServerError);
+      process.once('SIGTERM', handleSigterm);
+      process.once('SIGINT', handleSigint);
     });
 }
 

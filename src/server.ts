@@ -101,7 +101,11 @@ export type CliOpts = ProxyRouterOpts & {
   };
 };
 
-export function createProxyServer(options: CliOpts): Express {
+export type ProxyServer = Express & {
+  destroy(): Promise<void>;
+};
+
+export function createProxyServer(options: CliOpts): ProxyServer {
   const tokens = compact(options.tokens).reduce(
     (memo: string[], token: string) => concatTokens(token, memo),
     []
@@ -166,7 +170,9 @@ export function createProxyServer(options: CliOpts): Express {
     ...options
   });
 
-  proxy.on('error', (message) => app.emit('error', message));
+  proxy.on('error', (message) => {
+    if (app.listenerCount('error')) app.emit('error', message);
+  });
   proxy.on('warn', (message) => app.emit('warn', message));
 
   if (!options.silent) {
@@ -186,5 +192,8 @@ export function createProxyServer(options: CliOpts): Express {
   app.put('{/*path}', notSupported);
   app.post('{/*path}', notSupported);
 
-  return app;
+  const proxyApp = app as ProxyServer;
+  proxyApp.destroy = (): Promise<void> => proxy.destroy();
+
+  return proxyApp;
 }
