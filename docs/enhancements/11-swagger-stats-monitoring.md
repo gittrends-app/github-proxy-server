@@ -1,13 +1,13 @@
 ---
 id: 11
 title: Replace or isolate public swagger-stats monitoring
-status: planned
+status: verified
 risk: moderate
 urgency: normal
 scope: monitoring middleware, public status surface, and health checks
 ---
 
-**Status:** Planned; not yet implemented.
+**Status:** Verified; review and final validation are complete.
 
 ## Problem
 
@@ -37,6 +37,13 @@ health behavior and determine whether swagger-stats remains an approved dependen
 Separate liveness/readiness behavior from detailed monitoring if needed, restrict monitoring access
 to the intended trust boundary, and update dependency and README guidance consistently.
 
+The selected policy keeps only `GET /status` and `GET /status/` public, with a small JSON health
+response. Unknown `/status/*` paths return `404` before proxy routing. swagger-stats remains an
+intentional optional runtime dependency and, when enabled, uses the isolated `/metrics` namespace
+for its UI, stats, metrics, and logout paths. The existing Basic Auth middleware protects all
+metrics paths when credentials are configured. When monitoring is disabled, `/metrics` is reserved
+and returns `404`; the Docker health check remains on `/status`.
+
 ## Validation plan
 
 Test enabled and disabled monitoring, authenticated and unauthenticated status/metrics access, and
@@ -47,3 +54,13 @@ the Docker health check. Verify the selected monitoring contract without exposin
 - Monitoring exposure and authentication policy are explicit.
 - Health checks continue to work.
 - Dependency, route, documentation, and regression evidence support the selected design.
+
+## Implementation evidence
+
+- `src/server.ts` provides the public health routes, blocks unknown `/status/*` paths, and configures
+  swagger-stats under `/metrics` only when monitoring is enabled.
+- `src/server.spec.ts` covers enabled/disabled monitoring, both public health forms, protected and
+  authenticated metrics, status lookalikes, and the `/status` Docker health contract.
+- `README.md` documents the exposure and authentication policy.
+- Final validation: focused server tests (28 passed), full test suite (165 passed), Yarn lint,
+  TypeScript, production build, Docker image build, and the built-container health check passed.

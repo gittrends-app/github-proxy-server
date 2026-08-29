@@ -9,6 +9,7 @@ import compression from 'compression';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime.js';
 import express, { type Express, type Request, type Response } from 'express';
+import { StatusCodes } from 'http-status-codes';
 import compact from 'lodash/compact.js';
 import uniq from 'lodash/uniq.js';
 import { pino } from 'pino';
@@ -126,9 +127,18 @@ export function createProxyServer(options: CliOpts): ProxyServer {
     })
   );
 
+  app.get(['/status', '/status/'], (_req: Request, res: Response) => {
+    res.status(StatusCodes.OK).json({ status: 'ok' });
+  });
+
+  // Keep the public health namespace separate from proxy and monitoring routes.
+  app.use('/status', (_req: Request, res: Response) => {
+    res.status(StatusCodes.NOT_FOUND).send({ message: 'Endpoint not found' });
+  });
+
   if (options.auth) {
     app.use((req: Request, res: Response, next) => {
-      if (req.path === '/status' || req.path.startsWith('/status/')) return next();
+      if (req.path === '/status' || req.path === '/status/') return next();
 
       const credentials = basicAuth(req);
 
@@ -159,13 +169,22 @@ export function createProxyServer(options: CliOpts): ProxyServer {
   }
 
   if (options.statusMonitor) {
-    app.use(
-      swaggerStats.getMiddleware({
-        name: 'GitHub Proxy Server',
-        version: process.env.npm_package_version,
-        uriPath: '/status'
-      })
-    );
+    const monitoringOptions = {
+      name: 'GitHub Proxy Server',
+      version: process.env.npm_package_version,
+      uriPath: '/metrics',
+      pathUI: '/metrics/ui',
+      pathDist: '/metrics/dist',
+      pathUX: '/metrics/ux',
+      pathStats: '/metrics/stats',
+      pathMetrics: '/metrics/metrics',
+      pathLogout: '/metrics/logout'
+    };
+    app.use(swaggerStats.getMiddleware(monitoringOptions));
+  } else {
+    app.use('/metrics', (_req: Request, res: Response) => {
+      res.status(StatusCodes.NOT_FOUND).send({ message: 'Monitoring disabled' });
+    });
   }
 
   const proxy = new ProxyRouter(tokens, {

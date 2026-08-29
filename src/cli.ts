@@ -92,7 +92,7 @@ export function createCli(): Command {
         'GPS_AUTH_PASSWORD'
       )
     )
-    .addOption(new Option('--no-status-monitor', 'Disable requests monitoring on /status'))
+    .addOption(new Option('--no-status-monitor', 'Disable requests monitoring on /metrics'))
     .version(packageJson.version || '?', '-v, --version', 'output the current version')
     .action(async (options) => {
       let auth: CliOpts['auth'];

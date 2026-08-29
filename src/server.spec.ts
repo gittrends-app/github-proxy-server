@@ -143,6 +143,15 @@ describe('Test create proxy server', () => {
     await request(app).post('/graphql').expect(StatusCodes.OK);
   });
 
+  test('it should expose only the public health contract when monitoring is disabled', async () => {
+    const app = createTestApp({ ...params, statusMonitor: false });
+
+    await request(app).get('/status').expect(StatusCodes.OK).expect({ status: 'ok' });
+    await request(app).get('/status/').expect(StatusCodes.OK).expect({ status: 'ok' });
+    await request(app).get('/status/unknown').expect(StatusCodes.NOT_FOUND);
+    await request(app).get('/metrics').expect(StatusCodes.NOT_FOUND);
+  });
+
   test('it should emit logs when enabled', async () => {
     const app = createTestApp({ ...params, silent: false });
 
@@ -262,13 +271,28 @@ describe('Test proxy authentication', () => {
 
   test('it should allow access to /status without authentication', async () => {
     const app = createTestApp({ ...params, statusMonitor: true });
-    // /status endpoint redirects to /status/ - follow the redirect
-    const response = await request(app).get('/status').redirects(1);
+    const response = await request(app).get('/status');
     expect(response.status).toBe(StatusCodes.OK);
+    expect(response.body).toEqual({ status: 'ok' });
 
-    await request(app).get('/status/').expect(StatusCodes.OK);
+    await request(app).get('/status/').expect(StatusCodes.OK).expect({ status: 'ok' });
+    await request(app).get('/status/unknown').expect(StatusCodes.NOT_FOUND);
+    await request(app).get('/metrics').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/metrics/stats').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/metrics/metrics').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/metrics/stats').auth('testuser', 'testpass').expect(StatusCodes.OK);
+    await request(app).get('/metrics/metrics').auth('testuser', 'testpass').expect(StatusCodes.OK);
     await request(app).get('/status-other').expect(StatusCodes.UNAUTHORIZED);
     await request(app).get('/status-metrics').expect(StatusCodes.UNAUTHORIZED);
+  });
+
+  test('it should keep disabled metrics unavailable while protecting the health namespace', async () => {
+    const app = createTestApp({ ...params, statusMonitor: false });
+
+    await request(app).get('/status').expect(StatusCodes.OK);
+    await request(app).get('/status/unknown').expect(StatusCodes.NOT_FOUND);
+    await request(app).get('/metrics').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/metrics').auth('testuser', 'testpass').expect(StatusCodes.NOT_FOUND);
   });
 
   test('it should work with POST /graphql when authenticated', async () => {

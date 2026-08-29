@@ -101,9 +101,12 @@ Then make authenticated requests:
 curl -s -u myuser:mypass http://localhost:3000/users/gittrends-app 2>&1
 ```
 
-**Note:** The `/status` monitoring endpoint and its nested `/status/*` routes are excluded from
-authentication to allow health checks. Similarly prefixed routes such as `/status-other` still
-require authentication.
+**Note:** `/status` and `/status/` are small public health endpoints and return `{"status":"ok"}`.
+Unknown `/status/*` paths return `404` and never fall through to the proxy. Detailed swagger-stats
+monitoring, when enabled, is isolated under `/metrics` (`/metrics/stats` and `/metrics/metrics`)
+and is protected by Basic Authentication whenever proxy authentication is configured. Monitoring
+paths return `404` when disabled; similarly prefixed routes such as `/status-other` still require
+authentication.
 
 ### Deployment and TLS
 
@@ -130,7 +133,7 @@ Options:
   --no-override-authorization                 By default, the authorization header is overrided with a configured token
   --auth-username [username]                  Proxy authentication username (env: GPS_AUTH_USERNAME)
   --auth-password [password]                  Proxy authentication password (env: GPS_AUTH_PASSWORD)
-  --no-status-monitor                         Disable requests monitoring on /status
+  --no-status-monitor                         Disable requests monitoring on /metrics
   -v, --version                               output the current version
   -h, --help                                  display help for command
 ```
