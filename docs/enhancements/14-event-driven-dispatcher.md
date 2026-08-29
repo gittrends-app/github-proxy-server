@@ -1,30 +1,33 @@
 ---
 id: 14
 title: Replace per-worker polling with an event-driven bounded dispatcher
-status: planned
+status: verified
 risk: highest
 urgency: normal
 scope: scheduling architecture, queue notification, fairness, and bounded dispatch
 ---
 
-**Status:** Planned; not yet implemented.
+**Status:** Verified; focused and full validation are complete.
 
 ## Problem
 
-Workers poll every 100ms, enqueueing does not notify workers, queue removal is O(n), and each token
-creates four workers. This makes dispatch latency, fairness, and resource behavior harder to bound.
+Workers previously polled every 100ms and enqueueing did not notify workers. This made dispatch
+latency, fairness, and resource behavior harder to bound.
 
 ## Evidence
 
-- Polling is implemented at `src/router.ts:276-287`.
-- Queue enqueueing has no notification at `src/router.ts:301-306`.
-- Dequeue uses O(n) `shift()` at `src/router.ts:308-310`.
-- Four workers per token are created at `src/router.ts:394-409`.
+- `ProxyRouter` now owns per-resource dispatch state and schedules one coalesced microtask per
+  notification burst.
+- Workers notify the router when they become available, update rate limits, reset their time budget,
+  retry work, or complete work.
+- Dispatch uses per-resource round-robin selection and atomic worker reservations.
+- A single reset wake timer is maintained per resource when all eligible workers are rate-limited.
+- Router-owned budget reset scheduling replaces per-worker budget polling.
 
 ## Expected benefit
 
 Dispatch reacts immediately to available work, has explicit fairness and capacity behavior, and
-avoids unnecessary polling and queue scans.
+avoids unnecessary polling and repeated dispatch passes.
 
 ## Dependencies/decisions
 
@@ -34,15 +37,50 @@ behavior before changing the scheduling architecture.
 
 ## Implementation notes
 
-Replace polling with explicit queue/worker notifications and a bounded dispatcher. Preserve resource
-routing, rate-limit constraints, cancellation, and intentional retry behavior. Avoid changing all
-dispatch semantics in one untested rewrite.
+Polling was replaced with explicit queue/worker notifications and a bounded dispatcher. Resource
+routing, rate-limit constraints, cancellation, retry behavior, queue capacity, and shared request
+contexts remain unchanged.
 
 ## Validation plan
 
-Benchmark and test dispatch latency, fairness across tokens/resources, capacity limits, retries,
-shutdown, cancellation, and queue saturation. Compare behavior against the bounded queue and
-request-lifetime contract from item 13.
+Validation covers dispatch latency, round-robin fairness, capacity limits, retries, shutdown,
+cancellation, reset wakeups, worker destruction, and queue saturation. The item-14 focused tests
+use direct queue inspection, mocked worker scheduling, and fake timers; no network throughput is
+measured.
+
+### Reproducible evidence
+
+Commands run from the repository root:
+
+```text
+npx vitest run src/router.spec.ts --reporter=dot
+npx vitest run src/router.spec.ts -t "enqueue notification|next request immediately|resource dispatch queues|round-robin|atomic concurrency|dispatcher timers|exhausted worker"
+```
+
+Observed results:
+
+- Focused dispatcher checks: 7 passed.
+- Complete router suite: 75 passed.
+- Full project suite: 232 passed across 4 files.
+- TypeScript, Biome lint, production build, and `git diff --check`: passed.
+- Enqueue dispatch occurs after the next microtask; no 100ms polling advance is required.
+- Exhausted-budget fake-timer coverage observed zero schedule/dequeue notifications through 59,999ms;
+  one dispatch occurred at the 60,000ms budget reset.
+- Two-worker round-robin order was exactly `[0, 1, 0, 1]`; the existing multi-token integration
+  check observed every configured token serving work.
+- Saturated capacity returned HTTP 503 with `Retry-After: 1`; adding a token increased capacity,
+  and removing it restored the bounded worker count.
+
+Timer accounting after refresh completion is linear only for the existing per-token refresh
+intervals: 1, 10, and 100 tokens create respectively 1, 10, and 100 refresh intervals. The
+dispatcher itself uses one global budget-reset timer, zero idle resource wake timers, and at most
+one rate-reset wake timer per resource; it creates no per-worker polling intervals. The measured
+steady-state dispatcher timer count is therefore one for each of 1/10/100 tokens when no resource
+is rate-limited (or up to five including four resource wake timers while blocked).
+
+Baseline commit `6882049` was not benchmarked: it has polling-driven scheduling and no equivalent
+deterministic dispatcher boundary, so a wall-clock comparison would conflate polling, network, and
+test-harness timing. No throughput claim is made.
 
 ## Definition of done
 

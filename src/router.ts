@@ -62,6 +62,12 @@ type RequestContext = {
   onDisconnect: () => void;
 };
 
+type DispatchState = {
+  cursor: number;
+  notificationQueued: boolean;
+  resetTimer?: NodeJS.Timeout;
+};
+
 function headerString(value: ProxyHeaderValue | undefined): string | undefined {
   if (value === undefined) return undefined;
   return Array.isArray(value) ? value.join(', ') : value;
@@ -427,10 +433,7 @@ class ProxyWorker extends EventEmitter {
   private readonly scheduledRequests = new Set<ScheduledRequest>();
   private readonly ownedContexts = new Set<RequestContext>();
   private router?: ProxyRouter;
-  private resourceQueue?: RequestQueue;
-  private pullInterval?: NodeJS.Timeout;
-  private _budgetResetInterval?: NodeJS.Timeout;
-  private checkForWork?: () => Promise<void>;
+  private reservations = 0;
   private destroyed = false;
   private destroyPromise?: Promise<void>;
 
@@ -475,12 +478,6 @@ class ProxyWorker extends EventEmitter {
           timeBudget: opts.resource === 'graphql' ? 60000 : 90000
         };
     }
-
-    // Initialize time budget tracking
-    this._budgetResetInterval = setInterval(() => {
-      this.timeBudget =
-        (this.defaults.resource === 'graphql' ? 60000 : 90000) * (opts.timeBudgetMultiplier || 1);
-    }, 60000).unref();
 
     this.agent = new Agent({
       connections: 20,
@@ -613,6 +610,7 @@ class ProxyWorker extends EventEmitter {
                       }
 
                       this.timeBudget -= Date.now() - (req.startedAt?.getTime() || 1000);
+                      this.router?.notifyWorkerAvailability(this);
 
                       this.log(data.status, req.startedAt);
 
@@ -679,6 +677,7 @@ class ProxyWorker extends EventEmitter {
                 if (!this.router) cleanupRequestContext(context);
               }
               this.ownedContexts.delete(context);
+              queueMicrotask(() => this.router?.notifyWorkerAvailability(this));
               settleTask();
             }
           })
@@ -700,6 +699,7 @@ class ProxyWorker extends EventEmitter {
     this.remaining = limit.remaining;
     this.reset = limit.reset;
     this.log(undefined, new Date());
+    this.router?.notifyWorkerAvailability(this);
   }
 
   private updateLimits(headers: Record<string, string>): void {
@@ -711,6 +711,7 @@ class ProxyWorker extends EventEmitter {
       this.remaining = Number.parseInt(headers['x-ratelimit-remaining'], 10) - this.queue.pending;
       this.reset = Number.parseInt(headers['x-ratelimit-reset'], 10);
     }
+    this.router?.notifyWorkerAvailability(this);
   }
 
   private log(status?: number | string, startedAt?: Date): void {
@@ -732,31 +733,37 @@ class ProxyWorker extends EventEmitter {
     if (this.destroyed) return false;
 
     return (
-      this.queue.pending < (this.queue.concurrency ?? 1) &&
-      this.timeBudget >= this.queue.pending * 1000 &&
-      (this.remaining > this.opts.minRemaining || this.reset * 1000 < Date.now())
+      this.queue.pending + this.reservations < (this.queue.concurrency ?? 1) &&
+      this.timeBudget >= (this.queue.pending + this.reservations + 1) * 1000 &&
+      (this.remaining > this.opts.minRemaining || this.reset < Math.floor(Date.now() / 1000))
     );
+  }
+
+  reserveWork(): boolean {
+    if (!this.canAcceptWork()) return false;
+    this.reservations += 1;
+    return true;
+  }
+
+  releaseReservation(): void {
+    if (!this.reservations) return;
+    this.reservations -= 1;
+    this.router?.notifyWorkerAvailability(this);
+  }
+
+  resetTimeBudget(): void {
+    if (this.destroyed) return;
+    this.timeBudget =
+      (this.defaults.resource === 'graphql' ? 60000 : 90000) *
+      (this.opts.timeBudgetMultiplier || 1);
+    this.router?.notifyWorkerAvailability(this);
   }
 
   setRouter(router: ProxyRouter): void {
     if (this.destroyed) return;
 
     this.router = router;
-    this.resourceQueue = router.getQueue(this.defaults.resource);
-    this.startPullLoop();
-  }
-
-  private startPullLoop(): void {
-    if (this.destroyed || !this.router || !this.resourceQueue) return;
-
-    this.checkForWork = async () => {
-      if (this.destroyed || !this.canAcceptWork() || !this.resourceQueue) return;
-      const work = this.resourceQueue.dequeue();
-      if (work) await this.schedule(work.req, work.res);
-    };
-
-    // Fallback polling every 100ms for missed events
-    this.pullInterval = setInterval(this.checkForWork, 100).unref();
+    router.notifyWorkerAvailability(this);
   }
 
   get isDestroyed(): boolean {
@@ -770,13 +777,6 @@ class ProxyWorker extends EventEmitter {
     this.queue.pause();
     this.queue.clear();
 
-    if (this.pullInterval) clearInterval(this.pullInterval);
-    if (this._budgetResetInterval) clearInterval(this._budgetResetInterval);
-    this.pullInterval = undefined;
-    this._budgetResetInterval = undefined;
-
-    this.resourceQueue = undefined;
-    this.checkForWork = undefined;
     this.removeAllListeners();
 
     this.destroyPromise = (async () => {
@@ -878,6 +878,13 @@ export default class ProxyRouter extends EventEmitter {
   private destroyPromise?: Promise<void>;
   private readonly removals = new Set<Promise<void>>();
   private readonly requestContexts = new Set<RequestContext>();
+  private budgetResetTimer?: NodeJS.Timeout;
+  private readonly dispatchStates: Record<APIResources, DispatchState> = {
+    core: { cursor: 0, notificationQueued: false },
+    search: { cursor: 0, notificationQueued: false },
+    code_search: { cursor: 0, notificationQueued: false },
+    graphql: { cursor: 0, notificationQueued: false }
+  };
 
   private emitError(error: unknown): void {
     if (!this.listenerCount('error')) return;
@@ -931,6 +938,117 @@ export default class ProxyRouter extends EventEmitter {
     };
 
     tokens.forEach((token) => this.addToken(token));
+    this.armBudgetResetTimer();
+  }
+
+  notifyWorkerAvailability(worker: ProxyWorker): void {
+    if (this.destroyed) return;
+    this.notifyDispatch(worker.defaults.resource);
+  }
+
+  private notifyDispatch(resource: APIResources): void {
+    if (this.destroyed) return;
+    const state = this.dispatchStates[resource];
+    if (state.notificationQueued) return;
+    state.notificationQueued = true;
+    queueMicrotask(() => {
+      state.notificationQueued = false;
+      if (!this.destroyed) this.dispatch(resource);
+    });
+  }
+
+  private clearDispatchTimers(): void {
+    if (this.budgetResetTimer) clearTimeout(this.budgetResetTimer);
+    this.budgetResetTimer = undefined;
+
+    for (const state of Object.values(this.dispatchStates)) {
+      if (state.resetTimer) clearTimeout(state.resetTimer);
+      state.resetTimer = undefined;
+      state.notificationQueued = false;
+    }
+  }
+
+  private dispatch(resource: APIResources): void {
+    if (this.destroyed) return;
+    const state = this.dispatchStates[resource];
+    const queue = this.queues[resource];
+    if (!queue.size) {
+      if (state.resetTimer) clearTimeout(state.resetTimer);
+      state.resetTimer = undefined;
+      return;
+    }
+
+    while (queue.size) {
+      const workers = this.workersByResource[resource].filter((worker) => !worker.isDestroyed);
+      if (!workers.length) {
+        if (state.resetTimer) clearTimeout(state.resetTimer);
+        state.resetTimer = undefined;
+        return;
+      }
+
+      let selected: ProxyWorker | undefined;
+      for (let offset = 0; offset < workers.length; offset += 1) {
+        const index = (state.cursor + offset) % workers.length;
+        const worker = workers[index];
+        if (worker.reserveWork()) {
+          selected = worker;
+          state.cursor = (index + 1) % workers.length;
+          break;
+        }
+      }
+
+      if (!selected) {
+        this.armResetWake(resource, workers);
+        return;
+      }
+
+      const work = queue.dequeue();
+      if (!work) {
+        selected.releaseReservation();
+        return;
+      }
+      void selected.schedule(work.req as ExtendedRequest, work.res);
+      selected.releaseReservation();
+    }
+
+    if (state.resetTimer) clearTimeout(state.resetTimer);
+    state.resetTimer = undefined;
+  }
+
+  private armResetWake(resource: APIResources, workers: ProxyWorker[]): void {
+    const state = this.dispatchStates[resource];
+    if (state.resetTimer) clearTimeout(state.resetTimer);
+    const now = Date.now();
+    const earliest = workers.reduce((minimum, worker) => {
+      const resetAt = (worker.reset + 1) * 1000;
+      return worker.remaining <= (this.options.minRemaining ?? 0) && resetAt > now
+        ? Math.min(minimum, resetAt)
+        : minimum;
+    }, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(earliest)) {
+      state.resetTimer = undefined;
+      return;
+    }
+    state.resetTimer = setTimeout(
+      () => {
+        state.resetTimer = undefined;
+        this.notifyDispatch(resource);
+      },
+      Math.max(1, earliest - now)
+    ).unref();
+  }
+
+  private armBudgetResetTimer(): void {
+    if (this.destroyed) return;
+    if (this.budgetResetTimer) clearTimeout(this.budgetResetTimer);
+    this.budgetResetTimer = setTimeout(() => {
+      this.budgetResetTimer = undefined;
+      if (this.destroyed) return;
+      for (const workers of Object.values(this.workersByResource)) {
+        for (const worker of workers) worker.resetTimeBudget();
+      }
+      this.armBudgetResetTimer();
+    }, 60000).unref();
   }
 
   private resourceFor(req: Request): APIResources {
@@ -950,7 +1068,9 @@ export default class ProxyRouter extends EventEmitter {
   completeWork(context: RequestContext): void {
     if (context.state === 'settled') return;
     if (context.state === 'queued') {
-      this.queues[this.resourceFor(context.req)].remove(context.req, context.res);
+      const resource = this.resourceFor(context.req);
+      this.queues[resource].remove(context.req, context.res);
+      this.notifyDispatch(resource);
     }
     this.completeContext(context);
   }
@@ -970,9 +1090,11 @@ export default class ProxyRouter extends EventEmitter {
 
   private disconnectContext(context: RequestContext): void {
     if (context.state === 'queued') {
-      this.queues[this.resourceFor(context.req)].remove(context.req, context.res);
+      const resource = this.resourceFor(context.req);
+      this.queues[resource].remove(context.req, context.res);
       disposeUnreadRequest(context.req);
       this.completeContext(context);
+      this.notifyDispatch(resource);
     }
   }
 
@@ -983,12 +1105,14 @@ export default class ProxyRouter extends EventEmitter {
     retryAfter?: string
   ): void {
     if (context.state === 'settled') return;
+    const resource = this.resourceFor(context.req);
     if (context.state === 'queued') {
-      this.queues[this.resourceFor(context.req)].remove(context.req, context.res);
+      this.queues[resource].remove(context.req, context.res);
     }
     context.controller.abort();
     rejectRequest(context.req, context.res, status, body, retryAfter);
     this.completeContext(context);
+    this.notifyDispatch(resource);
   }
 
   private expireQueueContext(context: RequestContext): void {
@@ -1082,6 +1206,7 @@ export default class ProxyRouter extends EventEmitter {
       Math.max(0, requestContext.queueDeadline - Date.now())
     ).unref();
     queue.enqueue(req, res);
+    this.notifyDispatch(resource);
   }
 
   getQueue(resource: APIResources): RequestQueue {
@@ -1105,7 +1230,7 @@ export default class ProxyRouter extends EventEmitter {
       worker.on('retry', (req: ExtendedRequest, res: Response) => this.schedule(req, res));
       worker.on('log', (log: WorkerLogger) => this.emit('log', log));
       worker.on('warn', (message: string) => this.emit('warn', message));
-      // Phase 3: Set router reference to enable pull mechanism
+      // Workers notify the router when their scheduling state changes.
       worker.setRouter(this);
     }
 
@@ -1124,6 +1249,10 @@ export default class ProxyRouter extends EventEmitter {
     this.workersByResource.search.push(search);
     this.workersByResource.code_search.push(codeSearch);
     this.workersByResource.graphql.push(graphql);
+
+    for (const resource of ['core', 'search', 'code_search', 'graphql'] as APIResources[]) {
+      this.notifyDispatch(resource);
+    }
 
     this.startDetachedRefresh(client, true);
     // Auto-refresh rate limits every 15 minutes, once per token.
@@ -1309,6 +1438,10 @@ export default class ProxyRouter extends EventEmitter {
       worker.removeAllListeners();
     }
 
+    for (const resource of ['core', 'search', 'code_search', 'graphql'] as APIResources[]) {
+      this.notifyDispatch(resource);
+    }
+
     const error = disposalError(errors, 'Proxy token destruction failed');
     if (error) throw error;
   }
@@ -1351,6 +1484,7 @@ export default class ProxyRouter extends EventEmitter {
     if (this.destroyPromise) return this.destroyPromise;
 
     this.destroyed = true;
+    this.clearDispatchTimers();
 
     const clients = this.clients.splice(0);
     const removals = [...this.removals];

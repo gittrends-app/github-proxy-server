@@ -82,15 +82,46 @@ describe('Middleware constructor and methods', () => {
     }
   });
 
+  test('it should use token refresh intervals but no per-worker polling intervals', async () => {
+    vi.useFakeTimers();
+    const setInterval = vi.spyOn(globalThis, 'setInterval');
+    const middleware = new Middleware([FAKE_TOKEN, SECOND_TOKEN]);
+
+    try {
+      expect(setInterval).toHaveBeenCalledTimes(2);
+      const workersByResource = (
+        middleware as unknown as {
+          workersByResource: Record<string, Array<Record<string, unknown>>>;
+        }
+      ).workersByResource;
+      for (const workers of Object.values(workersByResource)) {
+        for (const worker of workers) {
+          expect(worker).not.toHaveProperty('pullInterval');
+          expect(worker).not.toHaveProperty('checkForWork');
+        }
+      }
+    } finally {
+      setInterval.mockRestore();
+      await middleware.destroy();
+      vi.useRealTimers();
+    }
+  });
+
   test('it should remove/add tokens', async () => {
     const middleware = new Middleware([FAKE_TOKEN]);
+    const notifyDispatch = vi.spyOn(
+      middleware as unknown as { notifyDispatch: (resource: 'core') => void },
+      'notifyDispatch'
+    );
     expect(middleware.tokens).toHaveLength(1);
 
     await middleware.removeToken(FAKE_TOKEN);
     expect(middleware.tokens).toHaveLength(0);
+    expect(notifyDispatch).toHaveBeenCalledTimes(4);
 
     middleware.addToken(FAKE_TOKEN);
     expect(middleware.tokens).toHaveLength(1);
+    expect(notifyDispatch).toHaveBeenCalledTimes(12);
     return middleware.destroy();
   });
 
@@ -119,6 +150,44 @@ describe('Middleware constructor and methods', () => {
       expect(middleware.tokens).toEqual([]);
       await middleware.removeToken('missing-token');
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('it should clear dispatcher timers synchronously during destruction', async () => {
+    vi.useFakeTimers();
+    const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 5000 });
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    const state = middleware as unknown as {
+      dispatchStates: Record<string, { resetTimer?: NodeJS.Timeout; notificationQueued: boolean }>;
+      budgetResetTimer?: NodeJS.Timeout;
+      dispatch: (resource: 'core') => void;
+    };
+    const dispatch = vi.spyOn(state, 'dispatch');
+
+    try {
+      await middleware.schedule(requestResponse.req, requestResponse.res);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(state.dispatchStates.core.resetTimer).toBeDefined();
+
+      const dispatchCallsBeforeDestroy = dispatch.mock.calls.length;
+      const destruction = middleware.destroy();
+      expect(state.budgetResetTimer).toBeUndefined();
+      for (const resource of Object.values(state.dispatchStates)) {
+        expect(resource.resetTimer).toBeUndefined();
+        expect(resource.notificationQueued).toBe(false);
+      }
+      await destruction;
+      vi.advanceTimersByTime(120000);
+      await Promise.resolve();
+      expect(dispatch.mock.calls.length).toBe(dispatchCallsBeforeDestroy);
+    } finally {
+      await middleware.destroy();
       vi.useRealTimers();
     }
   });
@@ -491,13 +560,6 @@ describe('Middleware constructor and methods', () => {
         };
       }
     ).workersByResource.core[0];
-    const queue = (
-      middleware as unknown as {
-        queues: {
-          core: { dequeue: () => { req: Request; res: Response } | undefined; size: number };
-        };
-      }
-    ).queues.core;
     const { req, res } = createStateAwareRequestResponse({
       headersSent: false,
       writableEnded: false,
@@ -514,10 +576,9 @@ describe('Middleware constructor and methods', () => {
 
     try {
       await middleware.schedule(req, res);
-      const work = queue.dequeue();
-      expect(work).toBeDefined();
-      const scheduled = worker.schedule(work!.req, work!.res);
-      await Promise.resolve();
+      await waitFor(
+        () => (worker as unknown as { ownedContexts: Set<unknown> }).ownedContexts.size === 1
+      );
       const context = (req as Request & { proxyContext?: { controller: AbortController } })
         .proxyContext;
       expect(context).toBeDefined();
@@ -525,7 +586,6 @@ describe('Middleware constructor and methods', () => {
       await worker.destroy();
       expect(context?.controller.signal.aborted).toBe(true);
       expect((req as Request & { proxyContext?: unknown }).proxyContext).toBeUndefined();
-      await scheduled;
     } finally {
       proxy.mockRestore();
       await middleware.destroy();
@@ -1158,6 +1218,18 @@ describe('Middleware core', () => {
       expect(second.status).toHaveBeenCalledWith(StatusCodes.SERVICE_UNAVAILABLE);
       expect(second.json).toHaveBeenCalledWith({ message: 'Proxy queue is full' });
       expect(second.resume).toHaveBeenCalledTimes(1);
+
+      limited.addToken(SECOND_TOKEN);
+      const third = createStateAwareRequestResponse({
+        headersSent: false,
+        writableEnded: false,
+        destroyed: false
+      });
+      await limited.schedule(third.req, third.res);
+      expect(third.status).not.toHaveBeenCalled();
+
+      await limited.removeToken(SECOND_TOKEN);
+      expect(limited.tokens).toEqual([FAKE_TOKEN]);
     } finally {
       await limited.destroy();
     }
@@ -1252,6 +1324,277 @@ describe('Middleware core', () => {
     }
   });
 
+  test('should not spin on an exhausted worker before the budget reset', async () => {
+    vi.useFakeTimers();
+    const limited = new Middleware([FAKE_TOKEN], {
+      minRemaining: 0,
+      queueWaitTimeout: 120000,
+      requestLifetimeTimeout: 120000
+    });
+    const worker = (
+      limited as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            timeBudget: number;
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    const queue = (
+      limited as unknown as {
+        queues: { core: { size: number } };
+      }
+    ).queues.core;
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    const schedule = vi.spyOn(worker, 'schedule').mockResolvedValue(undefined);
+    const notifyDispatch = vi.spyOn(
+      limited as unknown as { notifyDispatch: (resource: 'core') => void },
+      'notifyDispatch'
+    );
+
+    try {
+      await limited.refreshRateLimits();
+      worker.remaining = 5000;
+      worker.reset = 0;
+      worker.timeBudget = 0;
+
+      await limited.schedule(requestResponse.req, requestResponse.res);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(schedule).not.toHaveBeenCalled();
+      expect(queue.size).toBe(1);
+      const notificationsBeforeAdvance = notifyDispatch.mock.calls.length;
+
+      vi.advanceTimersByTime(59999);
+      await Promise.resolve();
+      expect(schedule).not.toHaveBeenCalled();
+      expect(queue.size).toBe(1);
+      expect(notifyDispatch.mock.calls.length).toBe(notificationsBeforeAdvance);
+
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(schedule).toHaveBeenCalledTimes(1);
+      expect(queue.size).toBe(0);
+    } finally {
+      await limited.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  test('it should dispatch queued work immediately in exact round-robin order', async () => {
+    const middleware = new Middleware([FAKE_TOKEN, SECOND_TOKEN], { minRemaining: 0 });
+    const workers = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+        queues: { core: { enqueue: (req: Request, res: Response) => void; size: number } };
+        dispatch: (resource: 'core') => void;
+      }
+    ).workersByResource.core;
+    const router = middleware as unknown as {
+      queues: { core: { enqueue: (req: Request, res: Response) => void; size: number } };
+      dispatch: (resource: 'core') => void;
+    };
+    const order: number[] = [];
+    workers.forEach((worker, index) => {
+      worker.remaining = 5000;
+      worker.reset = 0;
+      vi.spyOn(worker, 'schedule').mockImplementation(async () => {
+        order.push(index);
+      });
+    });
+
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        const requestResponse = createStateAwareRequestResponse({
+          headersSent: false,
+          writableEnded: false,
+          destroyed: false
+        });
+        router.queues.core.enqueue(requestResponse.req, requestResponse.res);
+      }
+      router.dispatch('core');
+      expect(order).toEqual([0, 1, 0, 1]);
+      expect(router.queues.core.size).toBe(0);
+    } finally {
+      await middleware.destroy();
+    }
+  });
+
+  test('it should dispatch an enqueue notification without polling delay', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 0 });
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{
+            remaining: number;
+            reset: number;
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource.core[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    const schedule = vi.spyOn(worker, 'schedule').mockResolvedValue(undefined);
+    const requestResponse = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+
+    try {
+      await middleware.schedule(requestResponse.req, requestResponse.res);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(schedule).toHaveBeenCalledTimes(1);
+    } finally {
+      await middleware.destroy();
+    }
+  });
+
+  test('it should dispatch the next request immediately after a worker completes', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 0 });
+    const worker = (
+      middleware as unknown as {
+        workersByResource: {
+          search: Array<{
+            remaining: number;
+            reset: number;
+            proxy: { proxy: (...args: never[]) => Promise<void> };
+          }>;
+        };
+      }
+    ).workersByResource.search[0];
+    worker.remaining = 5000;
+    worker.reset = 0;
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    let calls = 0;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    vi.spyOn(worker.proxy, 'proxy').mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        markFirstStarted();
+        await new Promise<void>((resolveFirst) => (releaseFirst = resolveFirst));
+      }
+    });
+    const first = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    Object.defineProperty(first.req, 'path', { value: '/search', configurable: true });
+    const second = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    Object.defineProperty(second.req, 'path', { value: '/search', configurable: true });
+
+    try {
+      await middleware.schedule(first.req, first.res);
+      await middleware.schedule(second.req, second.res);
+      await firstStarted;
+      expect(calls).toBe(1);
+      releaseFirst();
+      await waitFor(() => calls === 2);
+    } finally {
+      await middleware.destroy();
+    }
+  });
+
+  test('it should keep resource dispatch queues independent', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 0 });
+    const workers = (
+      middleware as unknown as {
+        workersByResource: {
+          core: Array<{ remaining: number; reset: number }>;
+          search: Array<{
+            remaining: number;
+            reset: number;
+            schedule: (req: Request, res: Response) => Promise<void>;
+          }>;
+        };
+      }
+    ).workersByResource;
+    workers.core[0].remaining = 0;
+    workers.core[0].reset = Math.floor(Date.now() / 1000) + 60;
+    workers.search[0].remaining = 5000;
+    workers.search[0].reset = 0;
+    const schedule = vi.spyOn(workers.search[0], 'schedule').mockResolvedValue(undefined);
+    const core = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    const search = createStateAwareRequestResponse({
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false
+    });
+    Object.defineProperty(search.req, 'path', { value: '/search', configurable: true });
+
+    try {
+      await middleware.schedule(core.req, core.res);
+      await middleware.schedule(search.req, search.res);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(schedule).toHaveBeenCalledTimes(1);
+    } finally {
+      await middleware.destroy();
+    }
+  });
+
+  test('it should reserve atomic concurrency slots for each resource', async () => {
+    const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 0 });
+    const workers = (
+      middleware as unknown as {
+        workersByResource: Record<
+          'core' | 'search' | 'code_search' | 'graphql',
+          Array<{
+            remaining: number;
+            reset: number;
+            timeBudget: number;
+            reserveWork: () => boolean;
+            releaseReservation: () => void;
+          }>
+        >;
+      }
+    ).workersByResource;
+
+    try {
+      for (const resource of ['core', 'graphql', 'search', 'code_search'] as const) {
+        const worker = workers[resource][0];
+        worker.remaining = 5000;
+        worker.reset = 0;
+        worker.timeBudget = 100000;
+        const limit = resource === 'core' || resource === 'graphql' ? 10 : 1;
+        const reservations = times(limit, () => worker.reserveWork());
+        expect(reservations).toEqual(times(limit, () => true));
+        expect(worker.reserveWork()).toBe(false);
+        times(limit, () => worker.releaseReservation());
+      }
+    } finally {
+      await middleware.destroy();
+    }
+  });
+
   test('it should preserve absolute deadlines and clear worker ownership across retries', async () => {
     const middleware = new Middleware([FAKE_TOKEN], { minRemaining: 0 });
     const worker = (
@@ -1317,14 +1660,15 @@ describe('Middleware core', () => {
         };
       }
     ).workersByResource.core[0];
-    workerA.remaining = 0;
-    workerA.reset = Math.floor(Date.now() / 1000) + 60;
+    workerA.remaining = 5000;
+    workerA.reset = 0;
     const workerB = (
       middleware as unknown as {
         workersByResource: {
           core: Array<{
             remaining: number;
             reset: number;
+            applyRateLimit: (limit: { remaining: number; reset: number }) => void;
             proxy: {
               proxy: (
                 req: Request,
@@ -1355,6 +1699,12 @@ describe('Middleware core', () => {
     const startedPromise = new Promise<void>((resolve) => {
       started = resolve;
     });
+    const originalSchedule = workerA.schedule;
+    const schedule = vi.spyOn(workerA, 'schedule').mockImplementation((req, res) => {
+      workerA.remaining = 0;
+      workerA.reset = Math.floor(Date.now() / 1000) + 60;
+      return originalSchedule(req, res);
+    });
 
     try {
       await middleware.schedule(requestResponse.req, requestResponse.res);
@@ -1370,8 +1720,9 @@ describe('Middleware core', () => {
       ).proxyContext;
       expect(context).toBeDefined();
       const deadlines = [context!.queueDeadline, context!.lifetimeDeadline];
-      const work = queue.dequeue();
-      await workerA.schedule(work!.req, work!.res);
+      await waitFor(
+        () => schedule.mock.calls.length === 1 && queue.size === 1 && context!.worker === undefined
+      );
       expect(queue.size).toBe(1);
       expect(context!.controller.signal.aborted).toBe(false);
       expect([context!.queueDeadline, context!.lifetimeDeadline]).toEqual(deadlines);
@@ -1395,8 +1746,7 @@ describe('Middleware core', () => {
       });
 
       try {
-        workerB.remaining = 5000;
-        workerB.reset = 0;
+        workerB.applyRateLimit({ remaining: 5000, reset: 0 });
         await startedPromise;
         expect(observedSignal).toBe(context!.controller.signal);
         expect([context!.queueDeadline, context!.lifetimeDeadline]).toEqual(deadlines);
@@ -1404,6 +1754,7 @@ describe('Middleware core', () => {
         proxy.mockRestore();
       }
     } finally {
+      schedule.mockRestore();
       await middleware.destroy();
     }
   });
