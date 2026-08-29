@@ -1,13 +1,13 @@
 ---
 id: 12
 title: Correct HTTP forwarding semantics at the proxy boundary
-status: planned
+status: verified
 risk: moderate/high
 urgency: high
 scope: request/response headers, hop-by-hop semantics, links, and proxy trust
 ---
 
-**Status:** Planned; not yet implemented.
+**Status:** Verified; review and final validation are complete.
 
 ## Problem
 
@@ -37,6 +37,14 @@ Filter connection-specific headers on both directions, preserve valid multi-valu
 derive link rewriting from an explicit trusted external scheme/host rather than an untrusted inbound
 value.
 
+The proxy removes the standard hop-by-hop header set plus every header named by the inbound
+`Connection` field on requests and responses, while preserving end-to-end metadata and repeated
+`Set-Cookie` values. The optional `externalBaseUrl`/`--external-base-url`/
+`GPS_EXTERNAL_BASE_URL` setting accepts only absolute HTTP(S) URLs, rewrites GitHub `Location` and
+`Link` values when configured, and leaves upstream links unchanged when omitted. Inbound `Host` is
+never used for externally visible links; the item 05 forwarded-header overwrite policy remains in
+place.
+
 ## Validation plan
 
 Add integration tests for hop-by-hop headers, multi-value response headers, forwarded requests, and
@@ -48,3 +56,15 @@ configuration.
 - Header forwarding follows the documented HTTP semantics.
 - Link rewriting uses the selected trusted external URL policy.
 - Integration/regression tests cover the proxy boundary and evidence is reported.
+
+## Implementation evidence
+
+- `src/proxy-client.ts` filters request/response hop-by-hop headers and preserves response header
+  arrays, including repeated cookies.
+- `src/router.ts` validates the trusted external base URL and rewrites redirects and `Link` headers
+  only when explicitly configured.
+- `src/server.ts`, `src/cli.ts`, and `README.md` expose and document the option consistently.
+- Focused proxy, router, server, and CLI tests cover filtering, forwarded headers, redirects, link
+  rewriting, HTTP/HTTPS combinations, missing values, and invalid configuration.
+- Final validation: focused forwarding tests (184 passed), full test suite (184 passed), Yarn lint,
+  TypeScript, and production build passed.

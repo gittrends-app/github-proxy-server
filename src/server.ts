@@ -108,7 +108,7 @@ export type ProxyServer = Express & {
 };
 
 export function createProxyServer(options: CliOpts): ProxyServer {
-  validateProxyRouterOptions(options);
+  const validatedOptions = validateProxyRouterOptions(options);
 
   const tokens = compact(options.tokens).reduce(
     (memo: string[], token: string) => concatTokens(token, memo),
@@ -189,7 +189,7 @@ export function createProxyServer(options: CliOpts): ProxyServer {
 
   const proxy = new ProxyRouter(tokens, {
     overrideAuthorization: options.overrideAuthorization ?? true,
-    ...options
+    ...validatedOptions
   });
 
   proxy.on('error', (message) => {

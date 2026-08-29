@@ -6,13 +6,14 @@ import { StatusCodes } from 'http-status-codes';
 import PQueue from 'p-queue';
 import { Agent } from 'undici';
 
-import { ProxyClient } from './proxy-client.js';
+import { ProxyClient, type ProxyHeaderValue } from './proxy-client.js';
 
 export type ProxyRouterOpts = {
   requestTimeout: number;
   minRemaining: number;
   overrideAuthorization?: boolean;
   timeBudgetMultiplier?: number;
+  externalBaseUrl?: string;
 };
 
 type ExtendedRequest = Request & {
@@ -32,6 +33,49 @@ type RateLimitResources = Record<APIResources, RateLimit>;
 const REFRESH_MAX_ATTEMPTS = 3;
 const REFRESH_BACKOFF_BASE_MS = 250;
 const REFRESH_BACKOFF_MAX_MS = 2000;
+const GITHUB_API_ORIGIN = 'https://api.github.com';
+
+function headerString(value: ProxyHeaderValue | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return Array.isArray(value) ? value.join(', ') : value;
+}
+
+function rebaseGitHubUrl(url: URL, externalBaseUrl: string): string {
+  const external = new URL(externalBaseUrl);
+  const basePath = external.pathname === '/' ? '' : external.pathname.replace(/\/$/, '');
+  const rebased = new URL(external.origin);
+  rebased.pathname = `${basePath}${url.pathname}`;
+  rebased.search = url.search;
+  rebased.hash = url.hash;
+  return rebased.toString();
+}
+
+function rewriteLocation(value: ProxyHeaderValue, externalBaseUrl: string): ProxyHeaderValue {
+  const rewrite = (header: string): string => {
+    try {
+      const url = new URL(header);
+      return url.origin === GITHUB_API_ORIGIN ? rebaseGitHubUrl(url, externalBaseUrl) : header;
+    } catch {
+      return header;
+    }
+  };
+  return Array.isArray(value) ? value.map(rewrite) : rewrite(value);
+}
+
+function rewriteLink(value: ProxyHeaderValue, externalBaseUrl: string): ProxyHeaderValue {
+  const rewrite = (header: string): string =>
+    header.replace(/<([^>]*)>/g, (reference, target: string) => {
+      try {
+        const url = new URL(target);
+        return url.origin === GITHUB_API_ORIGIN
+          ? `<${rebaseGitHubUrl(url, externalBaseUrl)}>`
+          : reference;
+      } catch {
+        return reference;
+      }
+    });
+  return Array.isArray(value) ? value.map(rewrite) : rewrite(value);
+}
 
 class RefreshFailure extends Error {}
 
@@ -113,6 +157,32 @@ export function parseTimeBudgetMultiplier(value: unknown): number {
   return parseNumericConfiguration(value, 'timeBudgetMultiplier', false);
 }
 
+export function parseExternalBaseUrl(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string')
+    throw new Error('Invalid externalBaseUrl: expected an absolute HTTP(S) URL.');
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('Invalid externalBaseUrl: expected an absolute HTTP(S) URL.');
+  }
+
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error('Invalid externalBaseUrl: expected an absolute HTTP(S) URL.');
+  }
+
+  return url.toString().replace(/\/$/, '');
+}
+
 export function validateProxyRouterOptions(options: ProxyRouterOpts): ProxyRouterOpts {
   const requestTimeout = parseRequestTimeout(options.requestTimeout);
   const minRemaining = parseMinRemaining(options.minRemaining);
@@ -120,8 +190,9 @@ export function validateProxyRouterOptions(options: ProxyRouterOpts): ProxyRoute
     options.timeBudgetMultiplier === undefined
       ? undefined
       : parseTimeBudgetMultiplier(options.timeBudgetMultiplier);
+  const externalBaseUrl = parseExternalBaseUrl(options.externalBaseUrl);
 
-  return { ...options, requestTimeout, minRemaining, timeBudgetMultiplier };
+  return { ...options, requestTimeout, minRemaining, timeBudgetMultiplier, externalBaseUrl };
 }
 
 const GITHUB_TOKEN_PATTERNS = [
@@ -341,20 +412,24 @@ class ProxyWorker extends EventEmitter {
                   onResponse: async (data) => {
                     if (this.destroyed) return;
 
-                    const linkHeader = data.headers.link;
-                    if (linkHeader && req.headers.host) {
-                      data.headers.link = linkHeader.replaceAll(
-                        'https://api.github.com',
-                        `http://${req.headers.host}`
-                      );
+                    if (opts.externalBaseUrl) {
+                      const link = data.headers.link;
+                      if (link !== undefined)
+                        data.headers.link = rewriteLink(link, opts.externalBaseUrl);
+                      const location = data.headers.location;
+                      if (location !== undefined) {
+                        data.headers.location = rewriteLocation(location, opts.externalBaseUrl);
+                      }
                     }
 
                     // Only update rate limits if we injected the token
                     if (!hasAuthorization) {
                       const status = data.status.toString();
-                      const rateLimitRemaining = data.headers['x-ratelimit-remaining'];
-                      const rateLimitReset = data.headers['x-ratelimit-reset'];
-                      const rateLimitLimit = data.headers['x-ratelimit-limit'];
+                      const rateLimitRemaining = headerString(
+                        data.headers['x-ratelimit-remaining']
+                      );
+                      const rateLimitReset = headerString(data.headers['x-ratelimit-reset']);
+                      const rateLimitLimit = headerString(data.headers['x-ratelimit-limit']);
 
                       if (rateLimitRemaining) {
                         this.updateLimits({
@@ -376,7 +451,9 @@ class ProxyWorker extends EventEmitter {
                         }
                       }
 
-                      const exposeHeaders = data.headers['access-control-expose-headers'];
+                      const exposeHeaders = headerString(
+                        data.headers['access-control-expose-headers']
+                      );
                       if (exposeHeaders) {
                         const filtered = exposeHeaders
                           .split(', ')

@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import { createAuthConfiguration, createCli, PARTIAL_AUTHENTICATION_ERROR } from './cli.js';
 import {
+  parseExternalBaseUrl,
   parseMinRemaining,
   parsePort,
   parseRequestTimeout,
@@ -245,6 +246,13 @@ describe('createCli command structure', () => {
     expect(statusMonitorOption).toBeDefined();
   });
 
+  test('should have trusted external base URL option', () => {
+    const externalBaseUrlOption = program.options.find((opt) => opt.long === '--external-base-url');
+    expect(externalBaseUrlOption).toBeDefined();
+    expect(externalBaseUrlOption?.parseArg).toBeDefined();
+    expect(externalBaseUrlOption?.required).toBe(true);
+  });
+
   test('should have version option', () => {
     const versionOption = program.options.find((opt) => opt.long === '--version');
     expect(versionOption).toBeDefined();
@@ -361,6 +369,29 @@ describe('CLI environment variables', () => {
     const program = createCli();
     const authPasswordOption = program.options.find((opt) => opt.long === '--auth-password');
     expect(authPasswordOption?.envVar).toBe('GPS_AUTH_PASSWORD');
+  });
+
+  test('should support GPS_EXTERNAL_BASE_URL environment variable', () => {
+    const program = createCli();
+    const externalBaseUrlOption = program.options.find((opt) => opt.long === '--external-base-url');
+    expect(externalBaseUrlOption?.envVar).toBe('GPS_EXTERNAL_BASE_URL');
+  });
+});
+
+describe('External base URL validation', () => {
+  test('should accept and normalize absolute HTTP(S) URLs', () => {
+    expect(parseExternalBaseUrl('http://proxy.example/base/')).toBe('http://proxy.example/base');
+    expect(parseExternalBaseUrl('https://proxy.example')).toBe('https://proxy.example');
+    expect(parseExternalBaseUrl(undefined)).toBeUndefined();
+  });
+
+  test.each([
+    'ftp://proxy.example',
+    '//proxy.example',
+    'not-a-url',
+    'https://proxy.example/?x=1'
+  ])('should reject invalid external base URL %s', (value) => {
+    expect(() => parseExternalBaseUrl(value)).toThrow('Invalid externalBaseUrl');
   });
 });
 

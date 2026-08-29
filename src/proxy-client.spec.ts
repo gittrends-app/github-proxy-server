@@ -104,6 +104,72 @@ describe('ProxyClient', () => {
       expect(receivedHeaders['x-custom-header']).toBe('custom-value');
     });
 
+    test('should filter hop-by-hop request headers and connection tokens', async () => {
+      let receivedHeaders: Record<string, string> = {};
+
+      scope.get('/hop-by-hop').reply(function () {
+        receivedHeaders = this.req.headers as Record<string, string>;
+        return [StatusCodes.OK, 'ok'];
+      });
+
+      const { req, res } = createMockRequestResponse('GET', '/hop-by-hop', undefined, {
+        connection: 'keep-alive, x-request-hop',
+        'keep-alive': 'timeout=5',
+        'x-request-hop': 'remove-me',
+        te: 'trailers',
+        'x-end-to-end': 'preserve-me'
+      });
+
+      await client.proxy(req, res);
+
+      expect(receivedHeaders.connection).toBeUndefined();
+      expect(receivedHeaders['keep-alive']).toBeUndefined();
+      expect(receivedHeaders['x-request-hop']).toBeUndefined();
+      expect(receivedHeaders.te).toBeUndefined();
+      expect(receivedHeaders['x-end-to-end']).toBe('preserve-me');
+    });
+
+    test('should preserve trusted forwarded headers named by inbound Connection', async () => {
+      let receivedHeaders: Record<string, string> = {};
+
+      scope.get('/forwarded-connection').reply(function () {
+        receivedHeaders = this.req.headers as Record<string, string>;
+        return [StatusCodes.OK, 'ok'];
+      });
+
+      const { req, res } = createMockRequestResponse('GET', '/forwarded-connection', undefined, {
+        connection: 'x-forwarded-for, x-forwarded-host, x-forwarded-proto',
+        'x-forwarded-for': 'spoofed-for',
+        'x-forwarded-host': 'spoofed-host',
+        'x-forwarded-proto': 'spoofed-proto'
+      });
+
+      await client.proxy(req, res);
+
+      expect(receivedHeaders['x-forwarded-for']).toBe('127.0.0.1');
+      expect(receivedHeaders['x-forwarded-host']).toBe('localhost:3000');
+      expect(receivedHeaders['x-forwarded-proto']).toBe('http');
+    });
+
+    test('should preserve modified authorization despite an inbound Connection token', async () => {
+      let receivedHeaders: Record<string, string> = {};
+
+      scope.get('/authorization').reply(function () {
+        receivedHeaders = this.req.headers as Record<string, string>;
+        return [StatusCodes.OK, 'ok'];
+      });
+
+      const { req, res } = createMockRequestResponse('GET', '/authorization', undefined, {
+        connection: 'authorization'
+      });
+
+      await client.proxy(req, res, {
+        modifyHeaders: (headers) => ({ ...headers, authorization: 'token injected' })
+      });
+
+      expect(receivedHeaders.authorization).toBe('token injected');
+    });
+
     test('should add forwarded metadata from the immediate request', async () => {
       let receivedHeaders: Record<string, string> = {};
 
@@ -253,6 +319,36 @@ describe('ProxyClient', () => {
 
       expect(res.getHeader('content-type')).toBe('application/json');
       expect(res.getHeader('x-custom-header')).toBe('custom-value');
+    });
+
+    test('should filter hop-by-hop response headers and preserve repeated cookies', async () => {
+      const headers = new Headers({
+        connection: 'x-response-hop',
+        'x-response-hop': 'remove-me',
+        'x-end-to-end': 'preserve-me'
+      });
+      Object.defineProperty(headers, 'getSetCookie', {
+        value: () => ['first=1; Path=/', 'second=2; Path=/']
+      });
+      const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        status: StatusCodes.OK,
+        statusText: 'OK',
+        headers,
+        body: null
+      } as unknown as globalThis.Response);
+
+      const { req, res } = createMockRequestResponse('GET', '/response-headers');
+
+      try {
+        await client.proxy(req, res);
+      } finally {
+        fetch.mockRestore();
+      }
+
+      expect(res.getHeader('connection')).toBeUndefined();
+      expect(res.getHeader('x-response-hop')).toBeUndefined();
+      expect(res.getHeader('x-end-to-end')).toBe('preserve-me');
+      expect(res.getHeader('set-cookie')).toEqual(['first=1; Path=/', 'second=2; Path=/']);
     });
 
     test('should handle empty response body', async () => {

@@ -13,6 +13,7 @@ import omitBy from 'lodash/omitBy.js';
 
 import packageJson from '../package.json' with { type: 'json' };
 import {
+  parseExternalBaseUrl,
   parseMinRemaining,
   parsePort,
   parseRequestTimeout,
@@ -75,6 +76,11 @@ export function createCli(): Command {
         .default(1)
         .env('GPS_TIME_BUDGET_MULTIPLIER')
     )
+    .addOption(
+      new Option('--external-base-url <url>', 'Trusted external HTTP(S) base URL')
+        .argParser(parseExternalBaseUrl)
+        .env('GPS_EXTERNAL_BASE_URL')
+    )
     .addOption(new Option('--silent', 'Dont show requests outputs').env('GPS_SILENT'))
     .addOption(
       new Option(
@@ -117,6 +123,7 @@ export function createCli(): Command {
       const requestTimeout = parseRequestTimeout(options.requestTimeout);
       const minRemaining = parseMinRemaining(options.minRemaining);
       const timeBudgetMultiplier = parseTimeBudgetMultiplier(options.timeBudgetMultiplier);
+      const externalBaseUrl = parseExternalBaseUrl(options.externalBaseUrl);
 
       const appOptions: CliOpts = {
         requestTimeout,
@@ -125,6 +132,7 @@ export function createCli(): Command {
         tokens: tokens,
         minRemaining,
         timeBudgetMultiplier,
+        externalBaseUrl,
         statusMonitor: options.statusMonitor,
         auth
       };

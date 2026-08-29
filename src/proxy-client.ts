@@ -3,6 +3,21 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import type { Dispatcher } from 'undici';
 
+export type ProxyHeaderValue = string | string[];
+export type ProxyResponseHeaders = Record<string, ProxyHeaderValue>;
+
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'proxy-connection'
+]);
+
 export interface ProxyClientOptions {
   target: string;
   timeout: number;
@@ -35,7 +50,7 @@ export class ProxyClient {
       onResponse?: (data: {
         status: number;
         statusText: string;
-        headers: Record<string, string>;
+        headers: ProxyResponseHeaders;
       }) => void | Promise<void>;
     }
   ): Promise<void> {
@@ -54,20 +69,32 @@ export class ProxyClient {
         }
       }
 
+      const connectionTokens = this.connectionTokens(headers);
       const forwardedHost = headers.host || '';
 
       // Remove host header to avoid conflicts
       delete headers.host;
 
       // Apply header modifications if provided
-      const modifiedHeaders = options?.modifyHeaders ? options.modifyHeaders(headers) : headers;
+      const filteredHeaders = this.filterHopByHopHeaders(headers, connectionTokens) as Record<
+        string,
+        string
+      >;
+      const modifiedHeaders = options?.modifyHeaders
+        ? options.modifyHeaders(filteredHeaders)
+        : filteredHeaders;
 
       // Do not trust inbound forwarded headers. The immediate connection is the only trusted hop
       // until a trusted proxy policy is configured at the application boundary.
-      modifiedHeaders['x-forwarded-for'] = req.socket.remoteAddress || '';
       const socket = req.socket as IncomingMessage['socket'] & { encrypted?: boolean };
-      modifiedHeaders['x-forwarded-proto'] = socket.encrypted ? 'https' : 'http';
-      modifiedHeaders['x-forwarded-host'] = forwardedHost;
+      const requestHeaders = this.filterHopByHopHeaders(
+        modifiedHeaders,
+        this.connectionTokens(modifiedHeaders)
+      ) as Record<string, string>;
+      delete requestHeaders.host;
+      requestHeaders['x-forwarded-for'] = req.socket.remoteAddress || '';
+      requestHeaders['x-forwarded-proto'] = socket.encrypted ? 'https' : 'http';
+      requestHeaders['x-forwarded-host'] = forwardedHost;
 
       // Prepare request body if present
       let body: Buffer | undefined;
@@ -78,7 +105,7 @@ export class ProxyClient {
       // Make the fetch request
       const response = await fetch(targetUrl.toString(), {
         method: req.method,
-        headers: modifiedHeaders,
+        headers: requestHeaders,
         body: body,
         signal: controller.signal,
         redirect: 'manual',
@@ -88,10 +115,23 @@ export class ProxyClient {
       clearTimeout(timeoutId);
 
       // Convert immutable response headers to mutable object
-      const responseHeaders: Record<string, string> = {};
+      const responseHeaders: ProxyResponseHeaders = {};
       response.headers.forEach((value, key) => {
-        responseHeaders[key] = value;
+        const current = responseHeaders[key];
+        responseHeaders[key] = current
+          ? Array.isArray(current)
+            ? [...current, value]
+            : [current, value]
+          : value;
       });
+      const setCookies = (
+        response.headers as Headers & { getSetCookie?: () => string[] }
+      ).getSetCookie?.();
+      if (setCookies?.length) responseHeaders['set-cookie'] = setCookies;
+      const filteredResponseHeaders = this.filterHopByHopHeaders(
+        responseHeaders,
+        this.connectionTokens(responseHeaders)
+      );
 
       // Call onResponse callback if provided (with mutable headers)
       if (options?.onResponse) {
@@ -99,14 +139,14 @@ export class ProxyClient {
         await options.onResponse({
           status: response.status,
           statusText: response.statusText,
-          headers: responseHeaders
+          headers: filteredResponseHeaders
         });
       }
 
       // Remove content-encoding headers since fetch automatically decompresses
       // Keeping them would cause ERR_CONTENT_DECODING_FAILED in browsers
-      delete responseHeaders['content-encoding'];
-      delete responseHeaders['content-length']; // Also remove as length changes after decompression
+      delete filteredResponseHeaders['content-encoding'];
+      delete filteredResponseHeaders['content-length']; // Also remove as length changes after decompression
 
       if (!this.canMutateResponse(res, controller.signal)) return;
 
@@ -116,7 +156,7 @@ export class ProxyClient {
       res.statusMessage = response.statusText;
 
       // Copy modified response headers
-      for (const [key, value] of Object.entries(responseHeaders)) {
+      for (const [key, value] of Object.entries(filteredResponseHeaders)) {
         if (!this.canMutateResponse(res, controller.signal)) return;
         res.setHeader(key, value);
       }
@@ -235,6 +275,27 @@ export class ProxyClient {
     } finally {
       if (abort) signal.removeEventListener('abort', abort);
     }
+  }
+
+  private connectionTokens(headers: Record<string, ProxyHeaderValue>): Set<string> {
+    const connection = headers.connection;
+    const values =
+      connection === undefined ? [] : Array.isArray(connection) ? connection : [connection];
+    return new Set(
+      values.flatMap((value) => value.split(',')).map((value) => value.trim().toLowerCase())
+    );
+  }
+
+  private filterHopByHopHeaders(
+    headers: Record<string, ProxyHeaderValue>,
+    connectionTokens: Set<string>
+  ): Record<string, ProxyHeaderValue> {
+    return Object.fromEntries(
+      Object.entries(headers).filter(([key]) => {
+        const normalizedKey = key.toLowerCase();
+        return !HOP_BY_HOP_HEADERS.has(normalizedKey) && !connectionTokens.has(normalizedKey);
+      })
+    );
   }
 
   private canWriteResponse(res: ServerResponse, signal: AbortSignal): boolean {

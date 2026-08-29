@@ -108,6 +108,11 @@ and is protected by Basic Authentication whenever proxy authentication is config
 paths return `404` when disabled; similarly prefixed routes such as `/status-other` still require
 authentication.
 
+When the proxy is deployed behind a trusted public URL, set `--external-base-url` or
+`GPS_EXTERNAL_BASE_URL` to an absolute `http://` or `https://` URL. Redirect and `Link` headers are
+rewritten to that base; if it is omitted, upstream links are preserved unchanged and the untrusted
+inbound `Host` header is never used for external URLs.
+
 ### Deployment and TLS
 
 The server listens for plain HTTP and binds to all interfaces when started by the CLI. Do not expose
@@ -129,6 +134,7 @@ Options:
   --request-timeout [timeout]                 Request timeout (ms) (default: 30000, env: GPS_REQUEST_TIMEOUT)
   --min-remaining <number>                    Stop using token on a minimum of (default: 100, env: GPS_MIN_REMAINING)
   --time-budget-multiplier [multiplier]       Time budget multiplier (>= 1.0) (default: 1, env: GPS_TIME_BUDGET_MULTIPLIER)
+  --external-base-url <url>                   Trusted external HTTP(S) base URL (env: GPS_EXTERNAL_BASE_URL)
   --silent                                    Dont show requests outputs (env: GPS_SILENT)
   --no-override-authorization                 By default, the authorization header is overrided with a configured token
   --auth-username [username]                  Proxy authentication username (env: GPS_AUTH_USERNAME)

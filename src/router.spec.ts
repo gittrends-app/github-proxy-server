@@ -714,6 +714,17 @@ describe('Middleware core', () => {
     });
   });
 
+  test.each([
+    'ftp://proxy.example',
+    '//proxy.example',
+    'not-a-url',
+    'https://proxy.example/?x=1'
+  ])('it should reject invalid external base URL %s', (externalBaseUrl) => {
+    expect(() => new Middleware([FAKE_TOKEN], { externalBaseUrl })).toThrow(
+      'Invalid externalBaseUrl'
+    );
+  });
+
   describe('GitHub API is online', () => {
     let scope: nock.Scope;
 
@@ -915,7 +926,7 @@ describe('Middleware core', () => {
       await request(app).get('/').set('Authorization', tokenStr).expect(200);
     });
 
-    test('it should replace base url on response header', async () => {
+    test('it should preserve upstream links when no external base URL is configured', async () => {
       const linkStr =
         '<https://api.github.com/repositories/000/tags?page=2>; rel="next", <https://api.github.com/repositories/000/tags?page=10>; rel="last"';
 
@@ -923,8 +934,78 @@ describe('Middleware core', () => {
 
       await request(app)
         .get('/')
-        .expect(({ headers, request }) => {
-          expect(headers.link).toEqual(linkStr.replace(/https:\/\/api.github.com\//g, request.url));
+        .expect(({ headers }) => {
+          expect(headers.link).toEqual(linkStr);
+        });
+    });
+
+    test.each([
+      'http://proxy.example/base',
+      'https://proxy.example',
+      'https://proxy.example/$edge'
+    ])('it should rewrite redirects and links using trusted external base %s', async (baseUrl) => {
+      await middleware.destroy();
+      middleware = new Middleware([FAKE_TOKEN], {
+        requestTimeout,
+        minRemaining: 0,
+        externalBaseUrl: baseUrl
+      });
+      await new Promise((resolve) => middleware.once('ready', resolve));
+
+      const linkStr =
+        '<https://api.github.com/repos/example?page=2>; rel="next", <https://other.example/?next=https://api.github.com/repos/other>; rel="other"';
+      scope.get('/redirect').reply(StatusCodes.MOVED_TEMPORARILY, '', {
+        location: 'https://api.github.com/repos/example',
+        link: linkStr
+      });
+      scope.get('/unrelated-location').reply(StatusCodes.MOVED_TEMPORARILY, '', {
+        location: 'https://other.example/redirect?next=https://api.github.com/repos/example',
+        link: linkStr
+      });
+
+      await request(app)
+        .get('/redirect')
+        .expect(StatusCodes.MOVED_TEMPORARILY)
+        .expect(({ headers }) => {
+          expect(headers.location).toBe(`${baseUrl}/repos/example`);
+          expect(headers.link).toBe(
+            `<${baseUrl}/repos/example?page=2>; rel="next", <https://other.example/?next=https://api.github.com/repos/other>; rel="other"`
+          );
+        });
+
+      await request(app)
+        .get('/unrelated-location')
+        .expect(StatusCodes.MOVED_TEMPORARILY)
+        .expect(({ headers }) => {
+          expect(headers.location).toBe(
+            'https://other.example/redirect?next=https://api.github.com/repos/example'
+          );
+          expect(headers.link).toBe(
+            `<${baseUrl}/repos/example?page=2>; rel="next", <https://other.example/?next=https://api.github.com/repos/other>; rel="other"`
+          );
+        });
+    });
+
+    test('should preserve origins when API and external paths begin with double slashes', async () => {
+      await middleware.destroy();
+      middleware = new Middleware([FAKE_TOKEN], {
+        requestTimeout,
+        minRemaining: 0,
+        externalBaseUrl: 'https://proxy.example//edge'
+      });
+      await new Promise((resolve) => middleware.once('ready', resolve));
+
+      scope.get('/double-slash').reply(StatusCodes.MOVED_TEMPORARILY, '', {
+        location: 'https://api.github.com//repos/example',
+        link: '<https://api.github.com//repos/example>; rel="next"'
+      });
+
+      await request(app)
+        .get('/double-slash')
+        .expect(StatusCodes.MOVED_TEMPORARILY)
+        .expect(({ headers }) => {
+          expect(headers.location).toBe('https://proxy.example//edge//repos/example');
+          expect(headers.link).toBe('<https://proxy.example//edge//repos/example>; rel="next"');
         });
     });
   });
