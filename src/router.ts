@@ -4,7 +4,7 @@ import EventEmitter from 'node:events';
 import type { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import PQueue from 'p-queue';
-import { Agent } from 'undici';
+import { Agent, type Dispatcher } from 'undici';
 
 import { PayloadTooLargeError, ProxyClient, type ProxyHeaderValue } from './proxy-client.js';
 
@@ -18,6 +18,7 @@ export type ProxyRouterOpts = {
   overrideAuthorization?: boolean;
   timeBudgetMultiplier?: number;
   externalBaseUrl?: string;
+  dispatcher?: Dispatcher;
 };
 
 type ExtendedRequest = Request & {
@@ -492,7 +493,7 @@ class ProxyWorker extends EventEmitter {
       target: 'https://api.github.com',
       timeout: opts.requestTimeout,
       maxRequestBodyBytes: opts.maxRequestBodyBytes,
-      dispatcher: this.agent
+      dispatcher: opts.dispatcher ?? this.agent
     });
 
     let maxConcurrent = 1;

@@ -6,6 +6,7 @@ import repeat from 'lodash/repeat.js';
 import times from 'lodash/times.js';
 import nock from 'nock';
 import request from 'supertest';
+import { MockAgent, type MockPool } from 'undici';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { PayloadTooLargeError } from './proxy-client';
@@ -1129,15 +1130,34 @@ function createStateAwareRequestResponse(state: {
 }
 
 describe('Middleware core', () => {
-  let scope: nock.Scope;
+  let mockAgent: MockAgent;
+  let mockPool: MockPool;
   let middleware: Middleware;
 
   const requestTimeout = 1000;
 
+  function proxyReply(
+    method: string,
+    path: string,
+    status: number,
+    data?: Record<string, unknown> | string,
+    headers: Record<string, string> = {}
+  ) {
+    return mockPool.intercept({ path, method }).reply(status, data, {
+      headers: {
+        'x-oauth-scopes': 'public_repo, read:org, read:user, user:emai',
+        'x-ratelimit-remaining': '4999',
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-reset': `${Math.floor((Date.now() + 60 * 60 * 1000) / 1000)}`,
+        ...headers
+      }
+    });
+  }
+
   beforeEach(async () => {
     if (!nock.isActive()) nock.activate();
 
-    scope = nock('https://api.github.com', { allowUnmocked: false })
+    nock('https://api.github.com', { allowUnmocked: false })
       .get('/rate_limit')
       .reply(StatusCodes.OK, {
         resources: {
@@ -1149,12 +1169,17 @@ describe('Middleware core', () => {
       })
       .persist();
 
+    mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    mockPool = mockAgent.get('https://api.github.com');
+
     app = express();
 
     middleware = new Middleware([FAKE_TOKEN], {
       requestTimeout,
       minRemaining: 0,
-      overrideAuthorization: false
+      overrideAuthorization: false,
+      dispatcher: mockAgent
     });
 
     await new Promise((resolve) => middleware.on('ready', resolve));
@@ -1163,10 +1188,10 @@ describe('Middleware core', () => {
   });
 
   afterEach(async () => {
+    await middleware.destroy();
+    await mockAgent.close();
     nock.cleanAll();
     nock.restore();
-
-    await middleware.destroy();
   });
 
   afterAll(() => {
@@ -1175,11 +1200,13 @@ describe('Middleware core', () => {
 
   describe('GitHub API is down or not reachable', () => {
     beforeEach(() => {
-      scope.get(/.*/).replyWithError({
+      const connectionError = new Error('connect failed');
+      Object.assign(connectionError, {
         code: 'ECONNREFUSED',
         errno: 'ECONNREFUSED',
         syscall: 'getaddrinfo'
       });
+      mockPool.intercept({ path: '/', method: 'GET' }).replyWithError(connectionError);
     });
 
     test(`it should respond with Bad Gateway (${StatusCodes.BAD_GATEWAY})`, async () => {
@@ -1761,33 +1788,15 @@ describe('Middleware core', () => {
   });
 
   describe('GitHub API is online', () => {
-    let scope: nock.Scope;
-
-    beforeEach(async () => {
-      scope = nock('https://api.github.com')
-        .persist()
-        .defaultReplyHeaders({
-          'access-control-expose-headers':
-            'ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, Deprecation, Sunset',
-          'x-oauth-scopes': 'public_repo, read:org, read:user, user:emai',
-          'x-ratelimit-remaining': '4999',
-          'x-ratelimit-limit': '5000',
-          'x-ratelimit-reset': `${Math.floor((Date.now() + 60 * 60 * 1000) / 1000)}`
-        });
-    });
-
     test('it should wait if no requests available', async () => {
       const reset = Date.now() + 1000; // must be greather or equal to 1
 
-      scope
-        .get('/reset')
-        .reply(StatusCodes.OK, '', {
-          'x-ratelimit-remaining': '0',
-          'x-ratelimit-limit': '5000',
-          'x-ratelimit-reset': `${Math.floor(reset / 1000)}`
-        })
-        .get('/')
-        .reply(StatusCodes.OK);
+      proxyReply('GET', '/reset', StatusCodes.OK, '', {
+        'x-ratelimit-remaining': '0',
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-reset': `${Math.floor(reset / 1000)}`
+      });
+      proxyReply('GET', '/', StatusCodes.OK);
 
       await request(app).get('/reset').expect(StatusCodes.OK);
 
@@ -1796,44 +1805,41 @@ describe('Middleware core', () => {
     });
 
     test('it should forward responses received from GitHub', async () => {
-      scope.get('/').reply(200);
+      proxyReply('GET', '/', 200).persist();
       await request(app)
         .get('/')
         .then(({ status }) => expect(status).toEqual(200));
 
-      scope.get('/300').reply(300);
+      proxyReply('GET', '/300', 300);
       await request(app)
         .get('/300')
         .catch(({ response }) => expect(response.status).toEqual(300));
 
-      scope.get('/400').reply(400);
+      proxyReply('GET', '/400', 400);
       await request(app)
         .get('/400')
         .catch(({ response }) => expect(response.status).toEqual(400));
 
-      scope.get('/500').reply(500);
+      proxyReply('GET', '/500', 500);
       await request(app)
         .get('/500')
         .catch(({ response }) => expect(response.status).toEqual(500));
     });
 
     test('it should interrupt long requests', async () => {
-      scope
-        .get('/')
-        .delay(requestTimeout * 2)
-        .reply(StatusCodes.OK);
+      proxyReply('GET', '/', StatusCodes.OK).delay(requestTimeout * 2);
 
       return request(app).get('/').expect(StatusCodes.BAD_GATEWAY);
     });
 
     test('it should respond to broken connections', async () => {
-      scope.get('/').replyWithError(new Error('Server Error'));
+      mockPool.intercept({ path: '/', method: 'GET' }).replyWithError(new Error('Server Error'));
 
       return request(app).get('/').expect(StatusCodes.BAD_GATEWAY);
     });
 
     test('it should not break proxy when client disconnect', async () => {
-      scope.get('/').delay(500).reply(StatusCodes.OK);
+      proxyReply('GET', '/', StatusCodes.OK).persist().delay(500);
 
       await Promise.all(
         times(25, () =>
@@ -1848,7 +1854,7 @@ describe('Middleware core', () => {
     });
 
     test('it should balance the use of the tokens', async () => {
-      scope.get('/').delay(250).reply(200);
+      proxyReply('GET', '/', 200).persist().delay(250);
 
       const tokens = times<string>(5, (n) => `${repeat('t', 39)}${n}`)
         .concat(FAKE_TOKEN)
@@ -1873,7 +1879,7 @@ describe('Middleware core', () => {
     });
 
     test('it should not forward ratelimit and scope information', async () => {
-      scope.get('/').delay(250).reply(200);
+      proxyReply('GET', '/', 200).persist().delay(250);
 
       return request(app)
         .get('/')
@@ -1884,21 +1890,22 @@ describe('Middleware core', () => {
     });
 
     test('it should handle unauthorized requests to API', async () => {
-      scope
-        .defaultReplyHeaders({
-          'x-ratelimit-remaining': '59',
-          'x-ratelimit-reset': `${Math.floor((Date.now() + 60 * 60 * 1000) / 1000)}`
-        })
-        .get('/user')
-        .matchHeader('authorization', `token ${repeat('i', 40)}`)
-        .reply(401, '', { 'x-ratelimit-limit': '60' })
-        .get('/user')
-        .matchHeader('authorization', `token ${repeat('j', 40)}`)
-        .reply(401, '')
-        .intercept('/user', 'get')
-        .reply(200)
-        .intercept('/', 'get')
-        .reply(200);
+      const tokenI = `token ${repeat('i', 40)}`;
+      const tokenJ = `token ${repeat('j', 40)}`;
+      mockPool
+        .intercept({ path: '/user', method: 'GET', headers: { authorization: tokenI } })
+        .reply(401, '', {
+          headers: {
+            'x-ratelimit-remaining': '59',
+            'x-ratelimit-reset': `${Math.floor((Date.now() + 60 * 60 * 1000) / 1000)}`,
+            'x-ratelimit-limit': '60'
+          }
+        });
+      mockPool
+        .intercept({ path: '/user', method: 'GET', headers: { authorization: tokenJ } })
+        .reply(401, '');
+      proxyReply('GET', '/user', 200);
+      proxyReply('GET', '/', 200).persist();
 
       await request(app).get('/').expect(200);
       await request(app).get('/user').expect(200);
@@ -1932,12 +1939,11 @@ describe('Middleware core', () => {
     });
 
     test('it should not update limits when "x-ratelimit-remaining" is not on header', async () => {
-      scope
-        .defaultReplyHeaders({
+      mockPool.intercept({ path: '/', method: 'GET' }).reply(401, '', {
+        headers: {
           'x-ratelimit-reset': `${Math.floor((Date.now() + 60 * 60 * 1000) / 1000)}`
-        })
-        .get('/')
-        .reply(401);
+        }
+      });
 
       await request(app).get('/').expect(401);
     });
@@ -1946,7 +1952,10 @@ describe('Middleware core', () => {
       const token = repeat('i', 40);
       const tokenStr = `token ${token}`;
 
-      scope.get('/').matchHeader('authorization', tokenStr).reply(401).get('/').reply(200);
+      mockPool
+        .intercept({ path: '/', method: 'GET', headers: { authorization: tokenStr } })
+        .reply(401);
+      proxyReply('GET', '/', 200).persist();
 
       await request(app).get('/').set('Authorization', tokenStr).expect(401);
       await request(app).get('/').expect(200);
@@ -1955,7 +1964,8 @@ describe('Middleware core', () => {
       middleware = new Middleware([FAKE_TOKEN], {
         requestTimeout,
         minRemaining: 0,
-        overrideAuthorization: true
+        overrideAuthorization: true,
+        dispatcher: mockAgent
       });
 
       await request(app).get('/').set('Authorization', tokenStr).expect(200);
@@ -1965,7 +1975,7 @@ describe('Middleware core', () => {
       const linkStr =
         '<https://api.github.com/repositories/000/tags?page=2>; rel="next", <https://api.github.com/repositories/000/tags?page=10>; rel="last"';
 
-      scope.get('/').reply(200, {}, { link: linkStr });
+      proxyReply('GET', '/', 200, {}, { link: linkStr });
 
       await request(app)
         .get('/')
@@ -1983,17 +1993,18 @@ describe('Middleware core', () => {
       middleware = new Middleware([FAKE_TOKEN], {
         requestTimeout,
         minRemaining: 0,
-        externalBaseUrl: baseUrl
+        externalBaseUrl: baseUrl,
+        dispatcher: mockAgent
       });
       await new Promise((resolve) => middleware.once('ready', resolve));
 
       const linkStr =
         '<https://api.github.com/repos/example?page=2>; rel="next", <https://other.example/?next=https://api.github.com/repos/other>; rel="other"';
-      scope.get('/redirect').reply(StatusCodes.MOVED_TEMPORARILY, '', {
+      proxyReply('GET', '/redirect', StatusCodes.MOVED_TEMPORARILY, '', {
         location: 'https://api.github.com/repos/example',
         link: linkStr
       });
-      scope.get('/unrelated-location').reply(StatusCodes.MOVED_TEMPORARILY, '', {
+      proxyReply('GET', '/unrelated-location', StatusCodes.MOVED_TEMPORARILY, '', {
         location: 'https://other.example/redirect?next=https://api.github.com/repos/example',
         link: linkStr
       });
@@ -2026,11 +2037,12 @@ describe('Middleware core', () => {
       middleware = new Middleware([FAKE_TOKEN], {
         requestTimeout,
         minRemaining: 0,
-        externalBaseUrl: 'https://proxy.example//edge'
+        externalBaseUrl: 'https://proxy.example//edge',
+        dispatcher: mockAgent
       });
       await new Promise((resolve) => middleware.once('ready', resolve));
 
-      scope.get('/double-slash').reply(StatusCodes.MOVED_TEMPORARILY, '', {
+      proxyReply('GET', '/double-slash', StatusCodes.MOVED_TEMPORARILY, '', {
         location: 'https://api.github.com//repos/example',
         link: '<https://api.github.com//repos/example>; rel="next"'
       });

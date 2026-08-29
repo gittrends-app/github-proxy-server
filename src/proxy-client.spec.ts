@@ -2,33 +2,55 @@
 
 import EventEmitter from 'node:events';
 import { IncomingMessage, ServerResponse } from 'node:http';
-import { Agent as HttpsAgent } from 'node:https';
 
 import { StatusCodes } from 'http-status-codes';
-import nock from 'nock';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  Agent,
+  MockAgent,
+  type MockPool,
+  Headers as UndiciHeaders,
+  type Response as UndiciResponse,
+  fetch as undiciFetch
+} from 'undici';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return { ...actual, fetch: vi.fn(actual.fetch) };
+});
 
 import { ProxyClient } from './proxy-client';
 
 describe('ProxyClient', () => {
   let client: ProxyClient;
-  let scope: nock.Scope;
+  let mockAgent: MockAgent | undefined;
+  let mockPool!: MockPool;
 
   const TARGET = 'https://api.example.com';
   const TIMEOUT = 5000;
 
-  beforeAll(() => {
-    nock.disableNetConnect();
-  });
+  function intercept(method: string, path: string, body?: unknown) {
+    return mockPool.intercept({
+      method,
+      path,
+      ...(body === undefined
+        ? {}
+        : {
+            body: (value: string): boolean =>
+              Buffer.from(value).toString() ===
+              (typeof body === 'string' ? body : JSON.stringify(body))
+          })
+    });
+  }
 
-  afterAll(() => {
-    nock.cleanAll();
-    nock.restore();
-    nock.enableNetConnect();
-  });
+  function normalizeHeaders(
+    headers: UndiciHeaders | Record<string, string> | undefined
+  ): Record<string, string> {
+    return Object.fromEntries(new UndiciHeaders(headers).entries());
+  }
 
-  afterEach(() => {
-    nock.cleanAll();
+  afterEach(async () => {
+    await mockAgent?.close();
   });
 
   describe('constructor', () => {
@@ -41,29 +63,33 @@ describe('ProxyClient', () => {
       expect(proxyClient).toBeInstanceOf(ProxyClient);
     });
 
-    test('should create client with custom agent', () => {
-      const agent = new HttpsAgent({ keepAlive: true });
+    test('should create client with custom agent', async () => {
+      const agent = new Agent({ keepAliveTimeout: 60000 });
       const proxyClient = new ProxyClient({
         target: TARGET,
         timeout: TIMEOUT,
-        agent
+        dispatcher: agent
       });
 
       expect(proxyClient).toBeInstanceOf(ProxyClient);
+      await agent.close();
     });
   });
 
   describe('proxy method', () => {
     beforeEach(() => {
+      mockAgent = new MockAgent();
+      mockAgent.disableNetConnect();
+      mockPool = mockAgent.get(TARGET);
       client = new ProxyClient({
         target: TARGET,
-        timeout: TIMEOUT
+        timeout: TIMEOUT,
+        dispatcher: mockAgent
       });
-      scope = nock(TARGET);
     });
 
     test('should proxy GET request successfully', async () => {
-      scope.get('/test').reply(StatusCodes.OK, { success: true });
+      intercept('GET', '/test').reply(StatusCodes.OK, { success: true });
 
       const { req, res } = createMockRequestResponse('GET', '/test');
 
@@ -76,7 +102,7 @@ describe('ProxyClient', () => {
     test('should proxy POST request with body', async () => {
       const requestBody = { data: 'test' };
 
-      scope.post('/test', requestBody).reply(StatusCodes.CREATED, { id: 123 });
+      intercept('POST', '/test', requestBody).reply(StatusCodes.CREATED, { id: 123 });
 
       const { req, res } = createMockRequestResponse('POST', '/test', requestBody);
 
@@ -87,8 +113,13 @@ describe('ProxyClient', () => {
     });
 
     test('should accept a request body exactly at the configured limit', async () => {
-      client = new ProxyClient({ target: TARGET, timeout: TIMEOUT, maxRequestBodyBytes: 7 });
-      scope.post('/at-limit', '"12345"').reply(StatusCodes.OK, 'ok');
+      client = new ProxyClient({
+        target: TARGET,
+        timeout: TIMEOUT,
+        maxRequestBodyBytes: 7,
+        dispatcher: mockAgent
+      });
+      intercept('POST', '/at-limit', '"12345"').reply(StatusCodes.OK, 'ok');
       const { req, res } = createMockRequestResponse('POST', '/at-limit', '12345', {
         'content-length': '7'
       });
@@ -133,9 +164,9 @@ describe('ProxyClient', () => {
     test('should copy request headers', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/test').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, { success: true }];
+      intercept('GET', '/test').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: { success: true } };
       });
 
       const { req, res } = createMockRequestResponse('GET', '/test', undefined, {
@@ -152,9 +183,9 @@ describe('ProxyClient', () => {
     test('should filter hop-by-hop request headers and connection tokens', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/hop-by-hop').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, 'ok'];
+      intercept('GET', '/hop-by-hop').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: 'ok' };
       });
 
       const { req, res } = createMockRequestResponse('GET', '/hop-by-hop', undefined, {
@@ -177,9 +208,9 @@ describe('ProxyClient', () => {
     test('should preserve trusted forwarded headers named by inbound Connection', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/forwarded-connection').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, 'ok'];
+      intercept('GET', '/forwarded-connection').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: 'ok' };
       });
 
       const { req, res } = createMockRequestResponse('GET', '/forwarded-connection', undefined, {
@@ -199,9 +230,9 @@ describe('ProxyClient', () => {
     test('should preserve modified authorization despite an inbound Connection token', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/authorization').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, 'ok'];
+      intercept('GET', '/authorization').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: 'ok' };
       });
 
       const { req, res } = createMockRequestResponse('GET', '/authorization', undefined, {
@@ -218,9 +249,9 @@ describe('ProxyClient', () => {
     test('should add forwarded metadata from the immediate request', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/test').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, { success: true }];
+      intercept('GET', '/test').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: { success: true } };
       });
 
       const { req, res } = createMockRequestResponse('GET', '/test', undefined, {
@@ -237,9 +268,9 @@ describe('ProxyClient', () => {
     test('should derive HTTPS protocol from the request socket', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/test').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, { success: true }];
+      intercept('GET', '/test').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: { success: true } };
       });
 
       const { req, res } = createMockRequestResponse(
@@ -258,9 +289,9 @@ describe('ProxyClient', () => {
     test('should replace spoofed forwarded headers with immediate request metadata', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/test').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, { success: true }];
+      intercept('GET', '/test').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: { success: true } };
       });
 
       const { req, res } = createMockRequestResponse('GET', '/test', undefined, {
@@ -280,9 +311,9 @@ describe('ProxyClient', () => {
     test('should send an empty forwarded host when the request has no host', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/test').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, { success: true }];
+      intercept('GET', '/test').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: { success: true } };
       });
 
       const { req, res } = createMockRequestResponse('GET', '/test');
@@ -296,9 +327,9 @@ describe('ProxyClient', () => {
     test('should modify headers via modifyHeaders callback', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/test').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, { success: true }];
+      intercept('GET', '/test').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: { success: true } };
       });
 
       const { req, res } = createMockRequestResponse('GET', '/test');
@@ -314,7 +345,7 @@ describe('ProxyClient', () => {
     });
 
     test('should call onResponse callback', async () => {
-      scope.get('/test').reply(StatusCodes.OK, { success: true });
+      intercept('GET', '/test').reply(StatusCodes.OK, { success: true });
 
       const { req, res } = createMockRequestResponse('GET', '/test');
 
@@ -333,7 +364,13 @@ describe('ProxyClient', () => {
     });
 
     test('should allow header manipulation in onResponse', async () => {
-      scope.get('/test').reply(StatusCodes.OK, { success: true }, { 'x-rate-limit': '100' });
+      intercept('GET', '/test').reply(
+        StatusCodes.OK,
+        { success: true },
+        {
+          headers: { 'x-rate-limit': '100' }
+        }
+      );
 
       const { req, res } = createMockRequestResponse('GET', '/test');
 
@@ -349,13 +386,10 @@ describe('ProxyClient', () => {
     });
 
     test('should copy response headers', async () => {
-      scope.get('/test').reply(
+      intercept('GET', '/test').reply(
         StatusCodes.OK,
         { success: true },
-        {
-          'content-type': 'application/json',
-          'x-custom-header': 'custom-value'
-        }
+        { headers: { 'content-type': 'application/json', 'x-custom-header': 'custom-value' } }
       );
 
       const { req, res } = createMockRequestResponse('GET', '/test');
@@ -375,12 +409,12 @@ describe('ProxyClient', () => {
       Object.defineProperty(headers, 'getSetCookie', {
         value: () => ['first=1; Path=/', 'second=2; Path=/']
       });
-      const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      const fetch = vi.mocked(undiciFetch).mockResolvedValue({
         status: StatusCodes.OK,
         statusText: 'OK',
         headers,
         body: null
-      } as unknown as globalThis.Response);
+      } as unknown as UndiciResponse);
 
       const { req, res } = createMockRequestResponse('GET', '/response-headers');
 
@@ -397,7 +431,7 @@ describe('ProxyClient', () => {
     });
 
     test('should handle empty response body', async () => {
-      scope.get('/test').reply(StatusCodes.NO_CONTENT);
+      intercept('GET', '/test').reply(StatusCodes.NO_CONTENT);
 
       const { req, res } = createMockRequestResponse('GET', '/test');
 
@@ -409,7 +443,7 @@ describe('ProxyClient', () => {
 
     test('should handle large response bodies with streaming', async () => {
       const largeBody = 'x'.repeat(1024 * 1024); // 1MB
-      scope.get('/large').reply(StatusCodes.OK, largeBody);
+      intercept('GET', '/large').reply(StatusCodes.OK, largeBody);
 
       const { req, res } = createMockRequestResponse('GET', '/large');
 
@@ -423,13 +457,13 @@ describe('ProxyClient', () => {
       const shortTimeout = 100;
       const timeoutClient = new ProxyClient({
         target: TARGET,
-        timeout: shortTimeout
+        timeout: shortTimeout,
+        dispatcher: mockAgent
       });
 
-      scope
-        .get('/slow')
-        .delay(shortTimeout * 2)
-        .reply(StatusCodes.OK);
+      intercept('GET', '/slow')
+        .reply(StatusCodes.OK)
+        .delay(shortTimeout * 2);
 
       const { req, res } = createMockRequestResponse('GET', '/slow');
 
@@ -440,10 +474,9 @@ describe('ProxyClient', () => {
 
     test('should cancel an active upstream request with the caller controller', async () => {
       const controller = new AbortController();
-      scope
-        .get('/cancel')
-        .delay(TIMEOUT * 2)
-        .reply(StatusCodes.OK);
+      intercept('GET', '/cancel')
+        .reply(StatusCodes.OK)
+        .delay(TIMEOUT * 2);
 
       const { req, res } = createMockRequestResponse('GET', '/cancel');
       const proxy = client.proxy(req, res, { abortController: controller });
@@ -462,7 +495,7 @@ describe('ProxyClient', () => {
       const responseStarted = new Promise<void>((resolve) => {
         onResponseStarted = resolve;
       });
-      scope.get('/cancel-on-response').reply(StatusCodes.OK);
+      intercept('GET', '/cancel-on-response').reply(StatusCodes.OK);
 
       const { req, res } = createMockRequestResponse('GET', '/cancel-on-response');
       const proxy = client.proxy(req, res, {
@@ -487,12 +520,12 @@ describe('ProxyClient', () => {
       const read = vi.fn(() => new Promise<ReadableStreamReadResult<Uint8Array>>(() => undefined));
       const cancel = vi.fn().mockResolvedValue(undefined);
       const releaseLock = vi.fn();
-      const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      const fetch = vi.mocked(undiciFetch).mockResolvedValue({
         status: StatusCodes.OK,
         statusText: 'OK',
         headers: new Headers(),
         body: { getReader: () => ({ read, cancel, releaseLock }) }
-      } as unknown as globalThis.Response);
+      } as unknown as UndiciResponse);
       const { req, res } = createMockRequestResponse('GET', '/stream-cancel');
 
       try {
@@ -521,12 +554,12 @@ describe('ProxyClient', () => {
         );
       const cancel = vi.fn().mockResolvedValue(undefined);
       const releaseLock = vi.fn();
-      const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      const fetch = vi.mocked(undiciFetch).mockResolvedValue({
         status: StatusCodes.OK,
         statusText: 'OK',
         headers: new Headers(),
         body: { getReader: () => ({ read, cancel, releaseLock }) }
-      } as unknown as globalThis.Response);
+      } as unknown as UndiciResponse);
       const { req, res } = createMockRequestResponse('GET', '/backpressure-cancel');
       const removeListener = vi.fn();
       res.write = vi.fn(() => false);
@@ -553,15 +586,17 @@ describe('ProxyClient', () => {
     });
 
     test('should handle network errors', async () => {
-      scope.get('/error').replyWithError(new Error('Network error'));
+      intercept('GET', '/error').replyWithError(new Error('Network error'));
 
       const { req, res } = createMockRequestResponse('GET', '/error');
 
-      await expect(client.proxy(req, res)).rejects.toThrow('Network error');
+      await expect(client.proxy(req, res)).rejects.toMatchObject({
+        cause: expect.objectContaining({ message: 'Network error' })
+      });
     });
 
     test('should handle HTTP error responses', async () => {
-      scope.get('/not-found').reply(StatusCodes.NOT_FOUND, { error: 'Not Found' });
+      intercept('GET', '/not-found').reply(StatusCodes.NOT_FOUND, { error: 'Not Found' });
 
       const { req, res } = createMockRequestResponse('GET', '/not-found');
 
@@ -572,8 +607,8 @@ describe('ProxyClient', () => {
     });
 
     test('should handle redirect responses with redirect: manual', async () => {
-      scope.get('/redirect').reply(StatusCodes.MOVED_PERMANENTLY, undefined, {
-        location: 'https://api.example.com/new-location'
+      intercept('GET', '/redirect').reply(StatusCodes.MOVED_PERMANENTLY, undefined, {
+        headers: { location: 'https://api.example.com/new-location' }
       });
 
       const { req, res } = createMockRequestResponse('GET', '/redirect');
@@ -585,7 +620,7 @@ describe('ProxyClient', () => {
     });
 
     test('should handle array headers', async () => {
-      scope.get('/test').reply(StatusCodes.OK, { success: true });
+      intercept('GET', '/test').reply(StatusCodes.OK, { success: true });
 
       const { req, res } = createMockRequestResponse('GET', '/test', undefined, {
         accept: ['application/json', 'text/html']
@@ -599,9 +634,9 @@ describe('ProxyClient', () => {
     test('should remove host header to avoid conflicts', async () => {
       let receivedHeaders: Record<string, string> = {};
 
-      scope.get('/test').reply(function () {
-        receivedHeaders = this.req.headers as Record<string, string>;
-        return [StatusCodes.OK, { success: true }];
+      intercept('GET', '/test').reply(({ headers }) => {
+        receivedHeaders = normalizeHeaders(headers);
+        return { statusCode: StatusCodes.OK, data: { success: true } };
       });
 
       const { req, res } = createMockRequestResponse('GET', '/test', undefined, {
@@ -617,7 +652,7 @@ describe('ProxyClient', () => {
     test('should handle PUT requests', async () => {
       const requestBody = { updated: true };
 
-      scope.put('/resource/123', requestBody).reply(StatusCodes.OK, { success: true });
+      intercept('PUT', '/resource/123', requestBody).reply(StatusCodes.OK, { success: true });
 
       const { req, res } = createMockRequestResponse('PUT', '/resource/123', requestBody);
 
@@ -628,7 +663,7 @@ describe('ProxyClient', () => {
     });
 
     test('should handle DELETE requests', async () => {
-      scope.delete('/resource/123').reply(StatusCodes.NO_CONTENT);
+      intercept('DELETE', '/resource/123').reply(StatusCodes.NO_CONTENT);
 
       const { req, res } = createMockRequestResponse('DELETE', '/resource/123');
 
@@ -641,7 +676,7 @@ describe('ProxyClient', () => {
     test('should handle PATCH requests', async () => {
       const requestBody = { field: 'new-value' };
 
-      scope.patch('/resource/123', requestBody).reply(StatusCodes.OK, { success: true });
+      intercept('PATCH', '/resource/123', requestBody).reply(StatusCodes.OK, { success: true });
 
       const { req, res } = createMockRequestResponse('PATCH', '/resource/123', requestBody);
 
@@ -652,7 +687,7 @@ describe('ProxyClient', () => {
     });
 
     test('should handle streaming errors and release reader lock', async () => {
-      scope.get('/streaming-error').reply(StatusCodes.OK, 'test response');
+      intercept('GET', '/streaming-error').reply(StatusCodes.OK, 'test response');
 
       const { req, res } = createMockRequestResponse('GET', '/streaming-error');
 
@@ -665,13 +700,10 @@ describe('ProxyClient', () => {
     });
 
     test('should allow header mutation in onResponse callback', async () => {
-      scope.get('/test').reply(
+      intercept('GET', '/test').reply(
         StatusCodes.OK,
         { success: true },
-        {
-          'x-rate-limit': '100',
-          'x-scope': 'repo'
-        }
+        { headers: { 'x-rate-limit': '100', 'x-scope': 'repo' } }
       );
 
       const { req, res } = createMockRequestResponse('GET', '/test');
@@ -693,8 +725,8 @@ describe('ProxyClient', () => {
     test('should remove content-encoding and content-length headers', async () => {
       // Mock a response that simulates having encoding headers
       // (fetch will have already decompressed, but headers remain)
-      scope.get('/api-response').reply(StatusCodes.OK, JSON.stringify({ success: true }), {
-        'content-type': 'application/json'
+      intercept('GET', '/api-response').reply(StatusCodes.OK, JSON.stringify({ success: true }), {
+        headers: { 'content-type': 'application/json' }
       });
 
       const { req, res } = createMockRequestResponse('GET', '/api-response');

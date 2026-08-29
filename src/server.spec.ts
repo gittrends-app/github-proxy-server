@@ -6,11 +6,37 @@ import times from 'lodash/times.js';
 import nock from 'nock';
 import request from 'supertest';
 import { withFile } from 'tmp-promise';
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest';
+import { MockAgent, type MockPool } from 'undici';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 
 import { type CliOpts, createProxyServer, parseTokens, readTokensFile } from './server.js';
 
 const createdApps: Array<ReturnType<typeof createProxyServer>> = [];
+let mockAgent: MockAgent;
+let mockPool: MockPool;
+
+beforeAll(() => {
+  mockAgent = new MockAgent();
+  mockAgent.disableNetConnect();
+  mockPool = mockAgent.get('https://api.github.com');
+  mockPool.intercept({ path: '/', method: 'GET' }).reply(StatusCodes.OK).persist();
+  mockPool
+    .intercept({
+      path: '/user',
+      method: 'GET',
+      headers: { authorization: `token ${repeat('i', 40)}` }
+    })
+    .reply(StatusCodes.UNAUTHORIZED)
+    .persist();
+  mockPool.intercept({ path: '/user', method: 'GET' }).reply(StatusCodes.OK).persist();
+  mockPool.intercept({ path: '/graphql', method: 'POST' }).reply(StatusCodes.OK).persist();
+});
+
+afterAll(async () => {
+  await mockAgent.close();
+  nock.cleanAll();
+  nock.restore();
+});
 
 function createTestApp(options: CliOpts): ReturnType<typeof createProxyServer> {
   const app = createProxyServer(options);
@@ -80,20 +106,7 @@ describe('Test create proxy server', () => {
           graphql: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 }
         }
       })
-      .persist()
-      .get('/user')
-      .matchHeader('authorization', `token ${repeat('i', 40)}`)
-      .reply(StatusCodes.UNAUTHORIZED)
-      .post('/graphql')
-      .reply(200)
-      .intercept(/.*/, 'get')
-      .reply(200)
-      .intercept(/.*/, 'post')
-      .reply(600)
-      .intercept(/.*/, 'put')
-      .reply(600)
-      .intercept(/.*/, 'delete')
-      .reply(600);
+      .persist();
   });
 
   beforeEach(async () => {
@@ -101,7 +114,8 @@ describe('Test create proxy server', () => {
       tokens: [repeat('0', 40)],
       minRemaining: 0,
       requestTimeout: 500,
-      silent: true
+      silent: true,
+      dispatcher: mockAgent
     };
   });
 
@@ -222,11 +236,7 @@ describe('Test proxy authentication', () => {
           graphql: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 }
         }
       })
-      .persist()
-      .intercept(/.*/, 'get')
-      .reply(200)
-      .post('/graphql')
-      .reply(200);
+      .persist();
   });
 
   beforeEach(() => {
@@ -235,6 +245,7 @@ describe('Test proxy authentication', () => {
       minRemaining: 0,
       requestTimeout: 500,
       silent: true,
+      dispatcher: mockAgent,
       auth: {
         username: 'testuser',
         password: 'testpass'

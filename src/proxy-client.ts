@@ -1,7 +1,7 @@
 /* Author: Hudson S. Borges */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import type { Dispatcher } from 'undici';
+import { type Dispatcher, fetch as undiciFetch } from 'undici';
 
 export type ProxyHeaderValue = string | string[];
 export type ProxyResponseHeaders = Record<string, ProxyHeaderValue>;
@@ -115,7 +115,7 @@ export class ProxyClient {
       }
 
       // Make the fetch request
-      const response = await fetch(targetUrl.toString(), {
+      const response = await undiciFetch(targetUrl.toString(), {
         method: req.method,
         headers: requestHeaders,
         body: body,
