@@ -6,10 +6,47 @@ import times from 'lodash/times.js';
 import nock from 'nock';
 import request from 'supertest';
 import { withFile } from 'tmp-promise';
-import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
+import { MockAgent, type MockPool } from 'undici';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 
-import { ProxyRouterResponse } from './router.js';
 import { type CliOpts, createProxyServer, parseTokens, readTokensFile } from './server.js';
+
+const createdApps: Array<ReturnType<typeof createProxyServer>> = [];
+let mockAgent: MockAgent;
+let mockPool: MockPool;
+
+beforeAll(() => {
+  mockAgent = new MockAgent();
+  mockAgent.disableNetConnect();
+  mockPool = mockAgent.get('https://api.github.com');
+  mockPool.intercept({ path: '/', method: 'GET' }).reply(StatusCodes.OK).persist();
+  mockPool
+    .intercept({
+      path: '/user',
+      method: 'GET',
+      headers: { authorization: `token ${repeat('i', 40)}` }
+    })
+    .reply(StatusCodes.UNAUTHORIZED)
+    .persist();
+  mockPool.intercept({ path: '/user', method: 'GET' }).reply(StatusCodes.OK).persist();
+  mockPool.intercept({ path: '/graphql', method: 'POST' }).reply(StatusCodes.OK).persist();
+});
+
+afterAll(async () => {
+  await mockAgent.close();
+  nock.cleanAll();
+  nock.restore();
+});
+
+function createTestApp(options: CliOpts): ReturnType<typeof createProxyServer> {
+  const app = createProxyServer(options);
+  createdApps.push(app);
+  return app;
+}
+
+afterEach(async () => {
+  await Promise.all(createdApps.splice(0).map((app) => app.destroy()));
+});
 
 describe('Test tokens file parser', () => {
   test('it should check tokens length', () => {
@@ -69,20 +106,7 @@ describe('Test create proxy server', () => {
           graphql: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 }
         }
       })
-      .persist()
-      .get('/user')
-      .matchHeader('authorization', `token ${repeat('i', 40)}`)
-      .reply(StatusCodes.UNAUTHORIZED)
-      .post('/graphql')
-      .reply(200)
-      .intercept(/.*/, 'get')
-      .reply(200)
-      .intercept(/.*/, 'post')
-      .reply(600)
-      .intercept(/.*/, 'put')
-      .reply(600)
-      .intercept(/.*/, 'delete')
-      .reply(600);
+      .persist();
   });
 
   beforeEach(async () => {
@@ -90,7 +114,8 @@ describe('Test create proxy server', () => {
       tokens: [repeat('0', 40)],
       minRemaining: 0,
       requestTimeout: 500,
-      silent: true
+      silent: true,
+      dispatcher: mockAgent
     };
   });
 
@@ -99,22 +124,50 @@ describe('Test create proxy server', () => {
     expect(() => createProxyServer(params)).toThrowError();
   });
 
-  test('it should accept GET requests', async () => {
-    const app = createProxyServer(params);
+  test.each([
+    ['requestTimeout', { requestTimeout: 0 }],
+    ['minRemaining', { minRemaining: -1 }],
+    ['timeBudgetMultiplier', { timeBudgetMultiplier: Infinity }]
+  ])('it should validate direct %s configuration', (_name, invalidOptions) => {
+    expect(() => createProxyServer({ ...params, ...invalidOptions })).toThrow(`Invalid ${_name}`);
+  });
+
+  test('it should expose an idempotent asynchronous app destroy method', async () => {
+    const app = createTestApp(params);
+    const destruction = app.destroy();
+
+    expect(app.destroy()).toBe(destruction);
+    await destruction;
+  });
+
+  test('it should accept GET requests and reject unsupported methods', async () => {
+    const app = createTestApp(params);
     await request(app).get('/').expect(StatusCodes.OK);
-    await request(app).post('/').expect(ProxyRouterResponse.PROXY_ERROR);
-    await request(app).patch('/').expect(ProxyRouterResponse.PROXY_ERROR);
-    await request(app).put('/').expect(ProxyRouterResponse.PROXY_ERROR);
-    await request(app).delete('/').expect(ProxyRouterResponse.PROXY_ERROR);
+
+    for (const method of ['post', 'patch', 'put', 'delete'] as const) {
+      await request(app)
+        [method]('/')
+        .expect(StatusCodes.METHOD_NOT_ALLOWED)
+        .expect({ message: 'Endpoint not supported' });
+    }
   });
 
   test('it should accept POSTs only to /graphql', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).post('/graphql').expect(StatusCodes.OK);
   });
 
+  test('it should expose only the public health contract when monitoring is disabled', async () => {
+    const app = createTestApp({ ...params, statusMonitor: false });
+
+    await request(app).get('/status').expect(StatusCodes.OK).expect({ status: 'ok' });
+    await request(app).get('/status/').expect(StatusCodes.OK).expect({ status: 'ok' });
+    await request(app).get('/status/unknown').expect(StatusCodes.NOT_FOUND);
+    await request(app).get('/metrics').expect(StatusCodes.NOT_FOUND);
+  });
+
   test('it should emit logs when enabled', async () => {
-    const app = createProxyServer({ ...params, silent: false });
+    const app = createTestApp({ ...params, silent: false });
 
     const logs: string[] = [];
     app.on('log', (data) => logs.push(data.toString()));
@@ -128,7 +181,7 @@ describe('Test create proxy server', () => {
   });
 
   test('it should not emit logs when disabled', async () => {
-    const app = createProxyServer({ ...params, silent: true });
+    const app = createTestApp({ ...params, silent: true });
 
     const logs: string[] = [];
     app.on('log', (data) => logs.push(data.toString()));
@@ -138,7 +191,7 @@ describe('Test create proxy server', () => {
   });
 
   test('it should emit an error when invalid token are detected', async () => {
-    const app = createProxyServer({ ...params, tokens: [repeat('i', 40)] });
+    const app = createTestApp({ ...params, tokens: [repeat('i', 40)] });
 
     const errors: string[] = [];
     app.on('error', (data) => errors.push(data.toString()));
@@ -148,7 +201,7 @@ describe('Test create proxy server', () => {
   });
 
   test('it should not pass authorization tokens by default', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
 
     await request(app)
       .get('/user')
@@ -158,7 +211,7 @@ describe('Test create proxy server', () => {
   });
 
   test('it should allow users to user own authorization tokens', async () => {
-    const app = createProxyServer({ ...params, overrideAuthorization: false });
+    const app = createTestApp({ ...params, overrideAuthorization: false });
 
     await request(app)
       .get('/user')
@@ -183,11 +236,7 @@ describe('Test proxy authentication', () => {
           graphql: { limit: 5000, remaining: 5000, reset: Date.now() + 60 * 60 }
         }
       })
-      .persist()
-      .intercept(/.*/, 'get')
-      .reply(200)
-      .post('/graphql')
-      .reply(200);
+      .persist();
   });
 
   beforeEach(() => {
@@ -196,6 +245,7 @@ describe('Test proxy authentication', () => {
       minRemaining: 0,
       requestTimeout: 500,
       silent: true,
+      dispatcher: mockAgent,
       auth: {
         username: 'testuser',
         password: 'testpass'
@@ -204,46 +254,76 @@ describe('Test proxy authentication', () => {
   });
 
   test('it should require authentication when auth is configured', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).get('/').expect(StatusCodes.UNAUTHORIZED);
     await request(app).post('/graphql').expect(StatusCodes.UNAUTHORIZED);
   });
 
   test('it should accept valid credentials', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).get('/').auth('testuser', 'testpass').expect(StatusCodes.OK);
   });
 
   test('it should reject invalid username', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).get('/').auth('wronguser', 'testpass').expect(StatusCodes.UNAUTHORIZED);
   });
 
   test('it should reject invalid password', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).get('/').auth('testuser', 'wrongpass').expect(StatusCodes.UNAUTHORIZED);
   });
 
+  test.each(['Bearer not-basic', 'Basic not-base64'])(
+    'it should reject malformed authorization header %s',
+    async (authorization) => {
+      const app = createTestApp(params);
+      await request(app)
+        .get('/')
+        .set('Authorization', authorization)
+        .expect(StatusCodes.UNAUTHORIZED);
+    }
+  );
+
   test('it should return WWW-Authenticate header on unauthorized', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     const response = await request(app).get('/').expect(StatusCodes.UNAUTHORIZED);
     expect(response.headers['www-authenticate']).toBe('Basic realm="GitHub Proxy Server"');
   });
 
   test('it should allow access to /status without authentication', async () => {
-    const app = createProxyServer({ ...params, statusMonitor: true });
-    // /status endpoint redirects to /status/ux - follow the redirect
-    const response = await request(app).get('/status').redirects(1);
+    const app = createTestApp({ ...params, statusMonitor: true });
+    const response = await request(app).get('/status');
     expect(response.status).toBe(StatusCodes.OK);
+    expect(response.body).toEqual({ status: 'ok' });
+
+    await request(app).get('/status/').expect(StatusCodes.OK).expect({ status: 'ok' });
+    await request(app).get('/status/unknown').expect(StatusCodes.NOT_FOUND);
+    await request(app).get('/metrics').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/metrics/stats').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/metrics/metrics').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/metrics/stats').auth('testuser', 'testpass').expect(StatusCodes.OK);
+    await request(app).get('/metrics/metrics').auth('testuser', 'testpass').expect(StatusCodes.OK);
+    await request(app).get('/status-other').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/status-metrics').expect(StatusCodes.UNAUTHORIZED);
+  });
+
+  test('it should keep disabled metrics unavailable while protecting the health namespace', async () => {
+    const app = createTestApp({ ...params, statusMonitor: false });
+
+    await request(app).get('/status').expect(StatusCodes.OK);
+    await request(app).get('/status/unknown').expect(StatusCodes.NOT_FOUND);
+    await request(app).get('/metrics').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/metrics').auth('testuser', 'testpass').expect(StatusCodes.NOT_FOUND);
   });
 
   test('it should work with POST /graphql when authenticated', async () => {
-    const app = createProxyServer(params);
+    const app = createTestApp(params);
     await request(app).post('/graphql').auth('testuser', 'testpass').expect(StatusCodes.OK);
   });
 
   test('it should not require auth when auth option is not provided', async () => {
-    const app = createProxyServer({ ...params, auth: undefined });
+    const app = createTestApp({ ...params, auth: undefined });
     await request(app).get('/').expect(StatusCodes.OK);
   });
 });

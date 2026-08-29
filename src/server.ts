@@ -3,12 +3,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import basicAuth from 'basic-auth';
+import { parse as parseBasicAuth } from 'basic-auth';
 import chalk from 'chalk';
 import compression from 'compression';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime.js';
 import express, { type Express, type Request, type Response } from 'express';
+import { StatusCodes } from 'http-status-codes';
 import compact from 'lodash/compact.js';
 import uniq from 'lodash/uniq.js';
 import { pino } from 'pino';
@@ -20,6 +21,8 @@ import { getBorderCharacters, table } from 'table';
 import ProxyRouter, {
   type ProxyRouterOpts,
   ProxyRouterResponse,
+  validateGitHubToken,
+  validateProxyRouterOptions,
   type WorkerLogger
 } from './router.js';
 
@@ -79,8 +82,7 @@ export function parseTokens(text: string): string[] {
 
 // concat tokens in commander
 export function concatTokens(token: string, list: string[]): string[] {
-  if (token.length !== 40)
-    throw new Error('Invalid access token detected (they have 40 characters)');
+  validateGitHubToken(token);
   return uniq([...list, token]);
 }
 
@@ -101,7 +103,13 @@ export type CliOpts = ProxyRouterOpts & {
   };
 };
 
-export function createProxyServer(options: CliOpts): Express {
+export type ProxyServer = Express & {
+  destroy(): Promise<void>;
+};
+
+export function createProxyServer(options: CliOpts): ProxyServer {
+  const validatedOptions = validateProxyRouterOptions(options);
+
   const tokens = compact(options.tokens).reduce(
     (memo: string[], token: string) => concatTokens(token, memo),
     []
@@ -119,11 +127,22 @@ export function createProxyServer(options: CliOpts): Express {
     })
   );
 
+  app.get(['/status', '/status/'], (_req: Request, res: Response) => {
+    res.status(StatusCodes.OK).json({ status: 'ok' });
+  });
+
+  // Keep the public health namespace separate from proxy and monitoring routes.
+  app.use('/status', (_req: Request, res: Response) => {
+    res.status(StatusCodes.NOT_FOUND).send({ message: 'Endpoint not found' });
+  });
+
   if (options.auth) {
     app.use((req: Request, res: Response, next) => {
-      if (req.path.startsWith('/status')) return next();
+      if (req.path === '/status' || req.path === '/status/') return next();
 
-      const credentials = basicAuth(req);
+      const credentials = req.headers.authorization
+        ? parseBasicAuth(req.headers.authorization)
+        : undefined;
 
       if (
         !credentials ||
@@ -152,21 +171,32 @@ export function createProxyServer(options: CliOpts): Express {
   }
 
   if (options.statusMonitor) {
-    app.use(
-      swaggerStats.getMiddleware({
-        name: 'GitHub Proxy Server',
-        version: process.env.npm_package_version,
-        uriPath: '/status'
-      })
-    );
+    const monitoringOptions = {
+      name: 'GitHub Proxy Server',
+      version: process.env.npm_package_version,
+      uriPath: '/metrics',
+      pathUI: '/metrics/ui',
+      pathDist: '/metrics/dist',
+      pathUX: '/metrics/ux',
+      pathStats: '/metrics/stats',
+      pathMetrics: '/metrics/metrics',
+      pathLogout: '/metrics/logout'
+    };
+    app.use(swaggerStats.getMiddleware(monitoringOptions));
+  } else {
+    app.use('/metrics', (_req: Request, res: Response) => {
+      res.status(StatusCodes.NOT_FOUND).send({ message: 'Monitoring disabled' });
+    });
   }
 
   const proxy = new ProxyRouter(tokens, {
     overrideAuthorization: options.overrideAuthorization ?? true,
-    ...options
+    ...validatedOptions
   });
 
-  proxy.on('error', (message) => app.emit('error', message));
+  proxy.on('error', (message) => {
+    if (app.listenerCount('error')) app.emit('error', message);
+  });
   proxy.on('warn', (message) => app.emit('warn', message));
 
   if (!options.silent) {
@@ -186,5 +216,8 @@ export function createProxyServer(options: CliOpts): Express {
   app.put('{/*path}', notSupported);
   app.post('{/*path}', notSupported);
 
-  return app;
+  const proxyApp = app as ProxyServer;
+  proxyApp.destroy = (): Promise<void> => proxy.destroy();
+
+  return proxyApp;
 }

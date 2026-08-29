@@ -41,7 +41,7 @@ npm run format           # Format code with Biome
 ```
 
 ### Git Hooks
-Pre-commit: Runs `npm run lint` and `npm run build`
+Pre-commit: Runs `yarn lint` and `yarn build`
 Commit-msg: Validates commit messages using commitlint (conventional commits)
 
 ### Release
@@ -183,7 +183,9 @@ try {
 ### Configuration
 - Support CLI flags and environment variables
 - Use `commander` for CLI parsing with `.env()` for env var binding
-- Validate required options (e.g., tokens must be 40 characters)
+- Validate supported GitHub credential formats: legacy 40-character credentials, `ghp_`, `gho_`,
+  `ghu_`, `ghs_`, and `ghr_` credentials with 36-character suffixes, or `github_pat_` credentials
+  with an 82-character suffix
 
 ## Common Gotchas
 

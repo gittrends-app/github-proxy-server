@@ -1,13 +1,44 @@
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import { unlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Command } from 'commander';
+import repeat from 'lodash/repeat.js';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { createCli } from './cli.js';
+import { createAuthConfiguration, createCli, PARTIAL_AUTHENTICATION_ERROR } from './cli.js';
+import {
+  parseExternalBaseUrl,
+  parseMaxQueueDepthPerWorker,
+  parseMaxRequestBodyBytes,
+  parseMinRemaining,
+  parsePort,
+  parseQueueWaitTimeout,
+  parseRequestLifetimeTimeout,
+  parseRequestTimeout,
+  parseTimeBudgetMultiplier
+} from './router.js';
 import { concatTokens, parseTokens, readTokensFile } from './server.js';
+
+type BooleanCliOptions = {
+  overrideAuthorization: boolean;
+  statusMonitor: boolean;
+};
+
+async function parseBooleanOptions(args: string[]): Promise<BooleanCliOptions> {
+  const program = createCli();
+  let options: BooleanCliOptions | undefined;
+  program.action((parsedOptions: BooleanCliOptions) => {
+    options = parsedOptions;
+  });
+
+  await program.parseAsync(['node', 'test', ...args]);
+
+  if (!options) throw new Error('CLI options were not parsed');
+  return options;
+}
 
 export type CliCmdResult = {
   code: number;
@@ -16,17 +47,40 @@ export type CliCmdResult = {
   stderr?: string | null;
 };
 
-export async function cli(args: string[], cwd: string): Promise<CliCmdResult> {
+export async function cli(
+  args: string[],
+  cwd: string,
+  environment: NodeJS.ProcessEnv = {}
+): Promise<CliCmdResult> {
   return new Promise((resolve) => {
     exec(
-      `npm run dev-no-reload --no-status-monitor ${args.join(' ')}`,
-      { cwd },
+      `npm run dev-no-reload -- --no-status-monitor ${args.join(' ')}`,
+      { cwd, env: { ...process.env, ...environment } },
       (error, stdout, stderr) => resolve({ code: error?.code ?? 0, error, stdout, stderr })
     );
   });
 }
 
 describe('Test cli app', () => {
+  test.each([
+    ['max request body bytes', parseMaxRequestBodyBytes, 1024 * 1024, 16 * 1024 * 1024],
+    ['max queue depth', parseMaxQueueDepthPerWorker, 1, 1000],
+    ['queue wait timeout', parseQueueWaitTimeout, 1, 120000],
+    ['request lifetime timeout', parseRequestLifetimeTimeout, 1, 600000]
+  ])('should parse %s within its configured range', (_name, parser, min, max) => {
+    expect(parser(min)).toBe(min);
+    expect(parser(max)).toBe(max);
+  });
+
+  test.each([
+    [parseMaxRequestBodyBytes, 1024 * 1024 - 1],
+    [parseMaxQueueDepthPerWorker, 0],
+    [parseQueueWaitTimeout, 0],
+    [parseRequestLifetimeTimeout, 0]
+  ])('should reject an invalid enhancement limit', (parser, value) => {
+    expect(() => parser(value)).toThrowError();
+  });
+
   test('it should thrown an error if token/tokens is not provided', async () => {
     const result = await cli([], '.');
     expect(result.code).toEqual(1);
@@ -35,6 +89,135 @@ describe('Test cli app', () => {
   test('it should thrown an error if invalid tokens are provided', async () => {
     const result = await cli(['-t', 'invalid'], '.');
     expect(result.code).toEqual(1);
+  });
+
+  test('it should reject username-only authentication before starting', async () => {
+    const username = 'only-user';
+    const result = await cli(['-t', '1234567890123456789012345678901234567890'], '.', {
+      GPS_AUTH_USERNAME: username
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+    expect(result.code).toEqual(1);
+    expect(output).toContain(PARTIAL_AUTHENTICATION_ERROR);
+    expect(output).not.toContain(username);
+  });
+
+  test('it should reject password-only authentication before starting', async () => {
+    const password = 'only-password';
+    const result = await cli(['-t', '1234567890123456789012345678901234567890'], '.', {
+      GPS_AUTH_PASSWORD: password
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+    expect(result.code).toEqual(1);
+    expect(output).toContain(PARTIAL_AUTHENTICATION_ERROR);
+    expect(output).not.toContain(password);
+  });
+
+  test('it should destroy the router when a child receives SIGTERM', async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        '--import',
+        'tsx/esm',
+        'src/cli.ts',
+        '--no-status-monitor',
+        '-t',
+        '1234567890123456789012345678901234567890',
+        '-p',
+        '0'
+      ],
+      { cwd: process.cwd(), env: { ...process.env, FORCE_COLOR: '0' } }
+    );
+
+    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        let settled = false;
+        const timeout = setTimeout(() => {
+          if (!settled) {
+            child.kill('SIGKILL');
+            reject(new Error('CLI did not shut down in time'));
+          }
+        }, 10000);
+        const signalTimer = setTimeout(() => child.kill('SIGTERM'), 3000);
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          clearTimeout(signalTimer);
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
+        });
+        child.once('close', (code, signal) => {
+          clearTimeout(timeout);
+          clearTimeout(signalTimer);
+          if (!settled) {
+            settled = true;
+            resolve({ code, signal });
+          }
+        });
+      }
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.signal).toBeNull();
+  }, 15000);
+
+  test('it should clean up when the listen server emits an error', async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once('error', reject);
+      blocker.listen({ host: '0.0.0.0', port: 0 }, resolve);
+    });
+
+    try {
+      const address = blocker.address();
+      if (!address || typeof address === 'string') throw new Error('Unable to determine test port');
+
+      const result = await cli(
+        ['-t', '1234567890123456789012345678901234567890', '-p', `${address.port}`],
+        '.'
+      );
+      expect(result.code).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  }, 15000);
+});
+
+describe('CLI authentication configuration', () => {
+  test('should leave authentication disabled when neither credential is supplied', () => {
+    expect(createAuthConfiguration(undefined, undefined)).toBeUndefined();
+  });
+
+  test('should configure authentication when both credentials are supplied', () => {
+    expect(createAuthConfiguration('testuser', 'testpass')).toEqual({
+      username: 'testuser',
+      password: 'testpass'
+    });
+  });
+
+  test('should reject username-only configuration without logging the username', () => {
+    const username = 'username-secret';
+
+    expect(() => createAuthConfiguration(username, undefined)).toThrowError(
+      PARTIAL_AUTHENTICATION_ERROR
+    );
+    expect(() => createAuthConfiguration(username, undefined)).toThrowError(
+      expect.not.objectContaining({ message: expect.stringContaining(username) })
+    );
+  });
+
+  test('should reject password-only configuration without logging the password', () => {
+    const password = 'password-secret';
+
+    expect(() => createAuthConfiguration(undefined, password)).toThrowError(
+      PARTIAL_AUTHENTICATION_ERROR
+    );
+    expect(() => createAuthConfiguration(undefined, password)).toThrowError(
+      expect.not.objectContaining({ message: expect.stringContaining(password) })
+    );
   });
 });
 
@@ -79,6 +262,15 @@ describe('createCli command structure', () => {
     expect(minRemainingOption?.defaultValue).toBe(100);
   });
 
+  test.each([
+    ['--max-request-body-bytes', 1024 * 1024],
+    ['--max-queue-depth', 50],
+    ['--queue-wait-timeout', 30000],
+    ['--request-lifetime-timeout', 120000]
+  ])('should have %s with default %s', (name, value) => {
+    expect(program.options.find((option) => option.long === name)?.defaultValue).toBe(value);
+  });
+
   test('should have --silent option', () => {
     const silentOption = program.options.find((opt) => opt.long === '--silent');
     expect(silentOption).toBeDefined();
@@ -102,6 +294,28 @@ describe('createCli command structure', () => {
   test('should have --no-status-monitor option', () => {
     const statusMonitorOption = program.options.find((opt) => opt.long === '--no-status-monitor');
     expect(statusMonitorOption).toBeDefined();
+  });
+
+  test.each([
+    [[], true, true],
+    [['--no-override-authorization'], false, true],
+    [['--no-status-monitor'], true, false],
+    [['--no-override-authorization', '--no-status-monitor'], false, false]
+  ])(
+    'should parse boolean defaults and explicit negative values %#',
+    async (args, overrideAuthorization, statusMonitor) => {
+      await expect(parseBooleanOptions(args)).resolves.toMatchObject({
+        overrideAuthorization,
+        statusMonitor
+      });
+    }
+  );
+
+  test('should have trusted external base URL option', () => {
+    const externalBaseUrlOption = program.options.find((opt) => opt.long === '--external-base-url');
+    expect(externalBaseUrlOption).toBeDefined();
+    expect(externalBaseUrlOption?.parseArg).toBeDefined();
+    expect(externalBaseUrlOption?.required).toBe(true);
   });
 
   test('should have version option', () => {
@@ -162,6 +376,29 @@ describe('CLI option parsing', () => {
   });
 });
 
+describe('Numeric configuration validation', () => {
+  test.each([
+    ['port', parsePort, 0, 65535],
+    ['requestTimeout', parseRequestTimeout, 1, 120000],
+    ['minRemaining', parseMinRemaining, 0, 5000],
+    ['timeBudgetMultiplier', parseTimeBudgetMultiplier, 1, 10]
+  ])('should accept %s boundaries', (_name, parse, minimum, maximum) => {
+    expect(parse(minimum)).toBe(minimum);
+    expect(parse(maximum)).toBe(maximum);
+  });
+
+  test.each([
+    ['port', parsePort, [-1, 65536, 1.5, '1e3', '']],
+    ['requestTimeout', parseRequestTimeout, [0, 120001, 1.5, 'Infinity', '']],
+    ['minRemaining', parseMinRemaining, [-1, 5001, 1.5, 'NaN', '']],
+    ['timeBudgetMultiplier', parseTimeBudgetMultiplier, [0, 10.1, 'Infinity', '1e2', '']]
+  ])('should reject invalid %s values', (name, parse, values) => {
+    for (const value of values) {
+      expect(() => parse(value)).toThrow(`Invalid ${name}`);
+    }
+  });
+});
+
 describe('CLI environment variables', () => {
   test('should support PORT environment variable', () => {
     const program = createCli();
@@ -187,6 +424,15 @@ describe('CLI environment variables', () => {
     expect(minRemainingOption?.envVar).toBe('GPS_MIN_REMAINING');
   });
 
+  test.each([
+    ['--max-request-body-bytes', 'GPS_MAX_REQUEST_BODY_BYTES'],
+    ['--max-queue-depth', 'GPS_MAX_QUEUE_DEPTH'],
+    ['--queue-wait-timeout', 'GPS_QUEUE_WAIT_TIMEOUT'],
+    ['--request-lifetime-timeout', 'GPS_REQUEST_LIFETIME_TIMEOUT']
+  ])('should support %s environment variable %s', (name, envVar) => {
+    expect(createCli().options.find((option) => option.long === name)?.envVar).toBe(envVar);
+  });
+
   test('should support GPS_AUTH_USERNAME environment variable', () => {
     const program = createCli();
     const authUsernameOption = program.options.find((opt) => opt.long === '--auth-username');
@@ -198,6 +444,27 @@ describe('CLI environment variables', () => {
     const authPasswordOption = program.options.find((opt) => opt.long === '--auth-password');
     expect(authPasswordOption?.envVar).toBe('GPS_AUTH_PASSWORD');
   });
+
+  test('should support GPS_EXTERNAL_BASE_URL environment variable', () => {
+    const program = createCli();
+    const externalBaseUrlOption = program.options.find((opt) => opt.long === '--external-base-url');
+    expect(externalBaseUrlOption?.envVar).toBe('GPS_EXTERNAL_BASE_URL');
+  });
+});
+
+describe('External base URL validation', () => {
+  test('should accept and normalize absolute HTTP(S) URLs', () => {
+    expect(parseExternalBaseUrl('http://proxy.example/base/')).toBe('http://proxy.example/base');
+    expect(parseExternalBaseUrl('https://proxy.example')).toBe('https://proxy.example');
+    expect(parseExternalBaseUrl(undefined)).toBeUndefined();
+  });
+
+  test.each(['ftp://proxy.example', '//proxy.example', 'not-a-url', 'https://proxy.example/?x=1'])(
+    'should reject invalid external base URL %s',
+    (value) => {
+      expect(() => parseExternalBaseUrl(value)).toThrow('Invalid externalBaseUrl');
+    }
+  );
 });
 
 describe('Helper Functions - concatTokens', () => {
@@ -206,6 +473,21 @@ describe('Helper Functions - concatTokens', () => {
     const result = concatTokens(token, []);
     expect(result).toContain(token);
     expect(result).toHaveLength(1);
+  });
+
+  test('should accept supported prefixed GitHub credential formats', () => {
+    const credentials = [
+      `ghp_${repeat('a', 36)}`,
+      `gho_${repeat('b', 36)}`,
+      `ghu_${repeat('c', 36)}`,
+      `ghs_${repeat('d', 36)}`,
+      `ghr_${repeat('e', 36)}`,
+      `github_pat_${repeat('f', 82)}`
+    ];
+
+    expect(
+      credentials.reduce<string[]>((list, credential) => concatTokens(credential, list), [])
+    ).toEqual(credentials);
   });
 
   test('should add valid token to existing list', () => {
@@ -235,6 +517,14 @@ describe('Helper Functions - concatTokens', () => {
 
   test('should throw error for empty token', () => {
     expect(() => concatTokens('', [])).toThrow('Invalid access token detected');
+  });
+
+  test('should reject unsupported credential formats without exposing them', () => {
+    const invalidToken = `github_pat_${repeat('secret', 20)}`;
+
+    expect(() => concatTokens(invalidToken, [])).toThrow(
+      expect.not.objectContaining({ message: expect.stringContaining(invalidToken) })
+    );
   });
 });
 
