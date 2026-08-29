@@ -109,3 +109,4 @@ typings/
 .LSOverride
 bin/
 dist/
+.slim/deepwork/
