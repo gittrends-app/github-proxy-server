@@ -53,17 +53,20 @@ export class ProxyClient {
         }
       }
 
+      const forwardedHost = headers.host || '';
+
       // Remove host header to avoid conflicts
       delete headers.host;
 
       // Apply header modifications if provided
       const modifiedHeaders = options?.modifyHeaders ? options.modifyHeaders(headers) : headers;
 
-      // Add forwarded headers (x-forwarded-*)
-      const forwarded = headers['x-forwarded-for'] || req.socket.remoteAddress || '';
-      modifiedHeaders['x-forwarded-for'] = forwarded;
-      modifiedHeaders['x-forwarded-proto'] = 'https' in req.socket ? 'https' : 'http';
-      modifiedHeaders['x-forwarded-host'] = headers.host || '';
+      // Do not trust inbound forwarded headers. The immediate connection is the only trusted hop
+      // until a trusted proxy policy is configured at the application boundary.
+      modifiedHeaders['x-forwarded-for'] = req.socket.remoteAddress || '';
+      const socket = req.socket as IncomingMessage['socket'] & { encrypted?: boolean };
+      modifiedHeaders['x-forwarded-proto'] = socket.encrypted ? 'https' : 'http';
+      modifiedHeaders['x-forwarded-host'] = forwardedHost;
 
       // Prepare request body if present
       let body: Buffer | undefined;

@@ -8,7 +8,6 @@ import request from 'supertest';
 import { withFile } from 'tmp-promise';
 import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
 
-import { ProxyRouterResponse } from './router.js';
 import { type CliOpts, createProxyServer, parseTokens, readTokensFile } from './server.js';
 
 describe('Test tokens file parser', () => {
@@ -99,13 +98,16 @@ describe('Test create proxy server', () => {
     expect(() => createProxyServer(params)).toThrowError();
   });
 
-  test('it should accept GET requests', async () => {
+  test('it should accept GET requests and reject unsupported methods', async () => {
     const app = createProxyServer(params);
     await request(app).get('/').expect(StatusCodes.OK);
-    await request(app).post('/').expect(ProxyRouterResponse.PROXY_ERROR);
-    await request(app).patch('/').expect(ProxyRouterResponse.PROXY_ERROR);
-    await request(app).put('/').expect(ProxyRouterResponse.PROXY_ERROR);
-    await request(app).delete('/').expect(ProxyRouterResponse.PROXY_ERROR);
+
+    for (const method of ['post', 'patch', 'put', 'delete'] as const) {
+      await request(app)
+        [method]('/')
+        .expect(StatusCodes.METHOD_NOT_ALLOWED)
+        .expect({ message: 'Endpoint not supported' });
+    }
   });
 
   test('it should accept POSTs only to /graphql', async () => {
@@ -232,9 +234,13 @@ describe('Test proxy authentication', () => {
 
   test('it should allow access to /status without authentication', async () => {
     const app = createProxyServer({ ...params, statusMonitor: true });
-    // /status endpoint redirects to /status/ux - follow the redirect
+    // /status endpoint redirects to /status/ - follow the redirect
     const response = await request(app).get('/status').redirects(1);
     expect(response.status).toBe(StatusCodes.OK);
+
+    await request(app).get('/status/').expect(StatusCodes.OK);
+    await request(app).get('/status-other').expect(StatusCodes.UNAUTHORIZED);
+    await request(app).get('/status-metrics').expect(StatusCodes.UNAUTHORIZED);
   });
 
   test('it should work with POST /graphql when authenticated', async () => {

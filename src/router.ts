@@ -315,7 +315,7 @@ class QueueImpl implements RequestQueue {
 }
 
 export enum ProxyRouterResponse {
-  PROXY_ERROR = 600
+  PROXY_ERROR = StatusCodes.METHOD_NOT_ALLOWED
 }
 
 export default class ProxyRouter extends EventEmitter {

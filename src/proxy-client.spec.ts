@@ -104,7 +104,69 @@ describe('ProxyClient', () => {
       expect(receivedHeaders['x-custom-header']).toBe('custom-value');
     });
 
-    test('should add x-forwarded headers', async () => {
+    test('should add forwarded metadata from the immediate request', async () => {
+      let receivedHeaders: Record<string, string> = {};
+
+      scope.get('/test').reply(function () {
+        receivedHeaders = this.req.headers as Record<string, string>;
+        return [StatusCodes.OK, { success: true }];
+      });
+
+      const { req, res } = createMockRequestResponse('GET', '/test', undefined, {
+        host: 'incoming.example.com'
+      });
+
+      await client.proxy(req, res);
+
+      expect(receivedHeaders['x-forwarded-for']).toBe('127.0.0.1');
+      expect(receivedHeaders['x-forwarded-proto']).toBe('http');
+      expect(receivedHeaders['x-forwarded-host']).toBe('incoming.example.com');
+    });
+
+    test('should derive HTTPS protocol from the request socket', async () => {
+      let receivedHeaders: Record<string, string> = {};
+
+      scope.get('/test').reply(function () {
+        receivedHeaders = this.req.headers as Record<string, string>;
+        return [StatusCodes.OK, { success: true }];
+      });
+
+      const { req, res } = createMockRequestResponse(
+        'GET',
+        '/test',
+        undefined,
+        {},
+        { encrypted: true }
+      );
+
+      await client.proxy(req, res);
+
+      expect(receivedHeaders['x-forwarded-proto']).toBe('https');
+    });
+
+    test('should replace spoofed forwarded headers with immediate request metadata', async () => {
+      let receivedHeaders: Record<string, string> = {};
+
+      scope.get('/test').reply(function () {
+        receivedHeaders = this.req.headers as Record<string, string>;
+        return [StatusCodes.OK, { success: true }];
+      });
+
+      const { req, res } = createMockRequestResponse('GET', '/test', undefined, {
+        host: 'incoming.example.com',
+        'x-forwarded-for': 'spoofed-client',
+        'x-forwarded-host': 'spoofed.example.com',
+        'x-forwarded-proto': 'https'
+      });
+
+      await client.proxy(req, res);
+
+      expect(receivedHeaders['x-forwarded-for']).toBe('127.0.0.1');
+      expect(receivedHeaders['x-forwarded-host']).toBe('incoming.example.com');
+      expect(receivedHeaders['x-forwarded-proto']).toBe('http');
+    });
+
+    test('should send an empty forwarded host when the request has no host', async () => {
       let receivedHeaders: Record<string, string> = {};
 
       scope.get('/test').reply(function () {
@@ -113,12 +175,11 @@ describe('ProxyClient', () => {
       });
 
       const { req, res } = createMockRequestResponse('GET', '/test');
+      delete req.headers.host;
 
       await client.proxy(req, res);
 
-      expect(receivedHeaders['x-forwarded-for']).toBeDefined();
-      expect(receivedHeaders['x-forwarded-proto']).toBeDefined();
-      expect(receivedHeaders['x-forwarded-host']).toBeDefined();
+      expect(receivedHeaders['x-forwarded-host']).toBe('');
     });
 
     test('should modify headers via modifyHeaders callback', async () => {
@@ -407,7 +468,8 @@ function createMockRequestResponse(
   method: string,
   url: string,
   body?: unknown,
-  headers: Record<string, string | string[]> = {}
+  headers: Record<string, string | string[]> = {},
+  socketOptions: { encrypted?: boolean; remoteAddress?: string } = {}
 ): { req: IncomingMessage; res: ServerResponse } {
   const req = {
     method,
@@ -417,8 +479,8 @@ function createMockRequestResponse(
       host: headers.host || 'localhost:3000'
     },
     socket: {
-      remoteAddress: '127.0.0.1',
-      encrypted: false
+      remoteAddress: socketOptions.remoteAddress || '127.0.0.1',
+      encrypted: socketOptions.encrypted || false
     },
     on: vi.fn((event: string, callback: (chunk?: Buffer) => void) => {
       if (event === 'data' && body) {

@@ -121,7 +121,7 @@ export function createProxyServer(options: CliOpts): Express {
 
   if (options.auth) {
     app.use((req: Request, res: Response, next) => {
-      if (req.path.startsWith('/status')) return next();
+      if (req.path === '/status' || req.path.startsWith('/status/')) return next();
 
       const credentials = basicAuth(req);
 

@@ -1,13 +1,13 @@
 ---
 id: 04
 title: Correct standard unsupported-method responses
-status: planned
+status: verified
 risk: low
 urgency: normal
 scope: HTTP method routing and response status handling
 ---
 
-**Status:** Planned; not yet implemented.
+**Status:** Verified; review and the parent orchestrator's validation gate are complete.
 
 ## Problem
 
@@ -26,13 +26,24 @@ rejection remains explicit.
 
 ## Dependencies/decisions
 
-Choose the appropriate standard 4xx status and response contract. Preserve the intentional rejection
-of write methods rather than turning them into proxied writes.
+Use `405 Method Not Allowed` with the existing `{ message: 'Endpoint not supported' }` response
+body. Preserve the intentional rejection of write methods rather than turning them into proxied
+writes.
 
 ## Implementation notes
 
 Change only the unsupported-method response path and any associated response type/name. Keep GET and
 GraphQL POST routing unchanged unless tests demonstrate a directly related defect.
+
+## Implementation evidence
+
+- `ProxyRouterResponse.PROXY_ERROR` now resolves to `StatusCodes.METHOD_NOT_ALLOWED` (`405`) without
+  changing the existing route declarations or response message.
+- Route integration coverage asserts the `405` status and response body for unsupported POST, PATCH,
+  PUT, and DELETE requests while retaining the supported GET and `/graphql` POST checks.
+- Focused validation: `npx vitest run src/server.spec.ts` — 22 tests passed.
+- Final validation: Yarn lint, TypeScript, all 120 tests, production build, Docker image build, and
+  the built-container health check passed.
 
 ## Validation plan
 

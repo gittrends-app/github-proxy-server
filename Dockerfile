@@ -1,11 +1,11 @@
 # ---- Base Node ----
 FROM node:24 AS base
 WORKDIR /app
-COPY package*.json ./
+COPY package.json yarn.lock ./
 
 # ---- Dependencies ----
 FROM base AS dependencies
-RUN npm install --force
+RUN corepack enable && yarn install --frozen-lockfile --ignore-scripts
 
 # ---- Build ----
 FROM dependencies AS build
@@ -21,8 +21,8 @@ WORKDIR /app
 RUN apk add --no-cache curl tini
 
 # Install app dependencies
-COPY --from=dependencies /app/package*.json ./
-RUN npm ci --omit=dev --ignore-scripts --force
+COPY --from=dependencies /app/package.json /app/yarn.lock ./
+RUN corepack enable && yarn install --frozen-lockfile --production=true --ignore-scripts
 
 # Bundle app source
 COPY --from=build /app/dist ./dist

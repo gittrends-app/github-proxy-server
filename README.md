@@ -101,7 +101,18 @@ Then make authenticated requests:
 curl -s -u myuser:mypass http://localhost:3000/users/gittrends-app 2>&1
 ```
 
-**Note:** The `/status` monitoring endpoint is excluded from authentication to allow health checks.
+**Note:** The `/status` monitoring endpoint and its nested `/status/*` routes are excluded from
+authentication to allow health checks. Similarly prefixed routes such as `/status-other` still
+require authentication.
+
+### Deployment and TLS
+
+The server listens for plain HTTP and binds to all interfaces when started by the CLI. Do not expose
+that listener directly to an untrusted network: Basic Authentication credentials and proxied traffic
+are not encrypted by this process. Put the server behind a trusted HTTPS/TLS termination boundary
+when credentials or traffic cross an untrusted network. A local or private-network Docker health
+check may continue to use `http://localhost:3000/status`; external health checks should use the
+trusted HTTPS endpoint.
 
 To more usage information, use the option `--help`.
 

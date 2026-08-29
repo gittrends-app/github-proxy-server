@@ -7,6 +7,8 @@ on:
     paths:
       - "src/**"
       - "package.json"
+      - "yarn.lock"
+      - "Dockerfile"
       - "biome.json"
       - "tsconfig.json"
       - "vitest.config.ts"
@@ -15,6 +17,8 @@ on:
     paths:
       - "src/**"
       - "package.json"
+      - "yarn.lock"
+      - "Dockerfile"
       - "biome.json"
       - "tsconfig.json"
       - "vitest.config.ts"
@@ -34,7 +38,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: "yarn"
-      - run: yarn
+      - run: corepack enable
+      - run: yarn install --frozen-lockfile
       - run: yarn lint
 
   build:
@@ -50,8 +55,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: "yarn"
+      - run: corepack enable
       - name: Install dependencies
-        run: yarn
+        run: yarn install --frozen-lockfile
       - name: Build source code
         run: yarn build
 
@@ -68,7 +74,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: "yarn"
-      - run: yarn
+      - run: corepack enable
+      - run: yarn install --frozen-lockfile
       - run: yarn test:coverage
       - name: Coveralls
         uses: coverallsapp/github-action@v2

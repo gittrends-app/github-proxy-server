@@ -1,13 +1,13 @@
 ---
 id: 06
 title: Establish one reproducible package-manager and dependency-audit path
-status: planned
+status: verified
 risk: low/moderate
 urgency: normal
 scope: dependency manifests, lockfiles, CI, and container builds
 ---
 
-**Status:** Planned; not yet implemented.
+**Status:** Verified; parent review and validation are complete.
 
 ## Problem
 
@@ -22,6 +22,8 @@ triage less reproducible.
 - Direct dependencies are listed in `package.json:46-58`.
 - `dotenv-override-true` and `https-proxy-agent` are likely unused; `ip` is used only for host
   display (`package.json:49`, `src/cli.ts:9`, `127`).
+- `swagger-stats@0.99.7` requires the runtime peer `prom-client`; `prom-client@^14.2.0` is now a
+  direct production dependency so the Yarn Classic production image includes it.
 
 ## Expected benefit
 
@@ -30,20 +32,47 @@ actionable results.
 
 ## Dependencies/decisions
 
-Choose Yarn or npm consistently, including the committed lockfile, CI cache/install commands, and
-Docker installation. Triage reachable advisories rather than treating the audit count alone as a
-removal plan. Confirm dependency usage before removing anything.
+Yarn Classic is authoritative because the repository already tracks `yarn.lock`, CI already uses
+Yarn, and the existing developer instructions use Yarn. `package.json` pins the package manager to
+`yarn@1.22.22`; installs use the lockfile without rewriting it. Docker and CI enable Corepack before
+running the same frozen install.
+
+Triage confirmed that `dotenv-override-true` and `https-proxy-agent` have no source imports, so they
+were removed from the manifest and lockfile. `ip` remains because `src/cli.ts` uses `ip.address()`
+to display the listening host. Yarn still reports the known `ip` advisory: it has no patched release,
+and this application does not call the affected `isPublic` API. No source change was required.
 
 ## Implementation notes
 
-Align manifests, lockfile handling, workflow commands, and Docker context/install instructions with
-the selected package manager. Review the named dependencies and record why each remains or is removed.
+Aligned the manifest, Yarn lockfile, Docker build context/install commands, and all CI install steps
+with Yarn Classic. The Docker context now includes `yarn.lock`; dependency and release stages both
+use `yarn install --frozen-lockfile`, with production dependencies selected in the release stage.
+CI uses the same frozen install in each job and retains setup-node's Yarn cache.
+
+The dependency-only Yarn audit completed with 182 packages and reported 68 advisories (8 low,
+35 moderate, 24 high, and 1 critical). The remaining findings are primarily transitive packages
+used by `swagger-stats` and the existing direct `lodash`, `undici`, and `ip` dependencies. This is
+an audit baseline and triage record, not a claim that all upstream advisories are fixed; Yarn Classic
+reports advisories but does not provide a general automatic remediation path. `npm audit` remains
+unsupported because no npm lockfile is authoritative.
 
 ## Validation plan
 
-Run a clean install with the selected manager, CI-equivalent lint/build/test commands, container
-build checks, and the supported audit command. Record the Yarn advisory caveat and do not claim npm
-audit support without an npm lockfile.
+Run a clean/frozen install with Yarn, CI-equivalent lint/build/test commands, container build checks,
+and `yarn audit --groups dependencies`. Record the Yarn advisory caveat and do not claim npm audit
+support without an npm lockfile.
+
+Implementation checks:
+
+- `yarn install --ignore-scripts`: passed and regenerated the lockfile after removing the two unused
+  dependencies.
+- `yarn install --frozen-lockfile --ignore-scripts`: passed.
+- `yarn audit --groups dependencies`: completed with exit code 30 because of the non-zero advisory
+  result above.
+- `npm audit`: not run; npm has no authoritative lockfile in this repository.
+- `git diff --check`: passed.
+- Parent validation: Yarn lint, TypeScript, all 120 tests, production build, Docker image build, and
+  the built-container health check passed.
 
 ## Definition of done
 

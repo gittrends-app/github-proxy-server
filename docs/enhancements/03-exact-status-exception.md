@@ -1,13 +1,13 @@
 ---
 id: 03
 title: Tighten the exact status exception
-status: planned
+status: verified
 risk: very-low
 urgency: urgent
 scope: status endpoint authentication and deployment guidance
 ---
 
-**Status:** Planned; not yet implemented.
+**Status:** Verified; review and the parent orchestrator's validation gate are complete.
 
 ## Problem
 
@@ -27,14 +27,27 @@ exposure when the service is reachable on a network interface.
 
 ## Dependencies/decisions
 
-Decide whether the exception is exact `/status` only or the intended `/status/*` namespace. Warn
-and document that HTTP requires TLS termination at a trusted boundary when credentials or traffic
+The selected public surface is `/status` and the nested `/status/*` namespace. This preserves the
+swagger-stats redirect from `/status` to `/status/` while excluding lookalike paths such as
+`/status-other`. HTTP requires TLS termination at a trusted boundary when credentials or traffic
 cross an untrusted network.
 
 ## Implementation notes
 
 Implement the selected route matcher rather than a general prefix check. Keep the status behavior
 needed by health checks and update deployment examples to reflect the chosen boundary.
+
+## Implementation evidence
+
+- `src/server.ts` now exempts only `/status` or paths beginning with the explicit `/status/` route
+  boundary.
+- `src/server.spec.ts` covers unauthenticated `/status` and `/status/` health access, while
+  `/status-other` and `/status-metrics` remain protected with configured authentication.
+- `README.md` documents the public status namespace, the all-interface plain-HTTP CLI listener,
+  and the requirement for trusted HTTPS/TLS termination across untrusted networks.
+- Focused validation: `npx vitest run src/server.spec.ts` — 22 tests passed.
+- Final validation: Yarn lint, TypeScript, all 120 tests, production build, Docker image build, and
+  the built-container health check passed.
 
 ## Validation plan
 
