@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { createCli } from './cli.js';
+import { createAuthConfiguration, createCli, PARTIAL_AUTHENTICATION_ERROR } from './cli.js';
 import { concatTokens, parseTokens, readTokensFile } from './server.js';
 
 export type CliCmdResult = {
@@ -16,11 +16,15 @@ export type CliCmdResult = {
   stderr?: string | null;
 };
 
-export async function cli(args: string[], cwd: string): Promise<CliCmdResult> {
+export async function cli(
+  args: string[],
+  cwd: string,
+  environment: NodeJS.ProcessEnv = {}
+): Promise<CliCmdResult> {
   return new Promise((resolve) => {
     exec(
-      `npm run dev-no-reload --no-status-monitor ${args.join(' ')}`,
-      { cwd },
+      `npm run dev-no-reload -- --no-status-monitor ${args.join(' ')}`,
+      { cwd, env: { ...process.env, ...environment } },
       (error, stdout, stderr) => resolve({ code: error?.code ?? 0, error, stdout, stderr })
     );
   });
@@ -35,6 +39,65 @@ describe('Test cli app', () => {
   test('it should thrown an error if invalid tokens are provided', async () => {
     const result = await cli(['-t', 'invalid'], '.');
     expect(result.code).toEqual(1);
+  });
+
+  test('it should reject username-only authentication before starting', async () => {
+    const username = 'only-user';
+    const result = await cli(['-t', '1234567890123456789012345678901234567890'], '.', {
+      GPS_AUTH_USERNAME: username
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+    expect(result.code).toEqual(1);
+    expect(output).toContain(PARTIAL_AUTHENTICATION_ERROR);
+    expect(output).not.toContain(username);
+  });
+
+  test('it should reject password-only authentication before starting', async () => {
+    const password = 'only-password';
+    const result = await cli(['-t', '1234567890123456789012345678901234567890'], '.', {
+      GPS_AUTH_PASSWORD: password
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+    expect(result.code).toEqual(1);
+    expect(output).toContain(PARTIAL_AUTHENTICATION_ERROR);
+    expect(output).not.toContain(password);
+  });
+});
+
+describe('CLI authentication configuration', () => {
+  test('should leave authentication disabled when neither credential is supplied', () => {
+    expect(createAuthConfiguration(undefined, undefined)).toBeUndefined();
+  });
+
+  test('should configure authentication when both credentials are supplied', () => {
+    expect(createAuthConfiguration('testuser', 'testpass')).toEqual({
+      username: 'testuser',
+      password: 'testpass'
+    });
+  });
+
+  test('should reject username-only configuration without logging the username', () => {
+    const username = 'username-secret';
+
+    expect(() => createAuthConfiguration(username, undefined)).toThrowError(
+      PARTIAL_AUTHENTICATION_ERROR
+    );
+    expect(() => createAuthConfiguration(username, undefined)).toThrowError(
+      expect.not.objectContaining({ message: expect.stringContaining(username) })
+    );
+  });
+
+  test('should reject password-only configuration without logging the password', () => {
+    const password = 'password-secret';
+
+    expect(() => createAuthConfiguration(undefined, password)).toThrowError(
+      PARTIAL_AUTHENTICATION_ERROR
+    );
+    expect(() => createAuthConfiguration(undefined, password)).toThrowError(
+      expect.not.objectContaining({ message: expect.stringContaining(password) })
+    );
   });
 });
 

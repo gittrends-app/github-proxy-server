@@ -15,6 +15,23 @@ import omitBy from 'lodash/omitBy.js';
 import packageJson from '../package.json' with { type: 'json' };
 import { type CliOpts, concatTokens, createProxyServer, readTokensFile } from './server.js';
 
+export const PARTIAL_AUTHENTICATION_ERROR =
+  'Authentication requires both username and password when configured.';
+
+export function createAuthConfiguration(
+  username: string | undefined,
+  password: string | undefined
+): CliOpts['auth'] {
+  const hasUsername = username !== undefined;
+  const hasPassword = password !== undefined;
+
+  if (hasUsername !== hasPassword) {
+    throw new Error(PARTIAL_AUTHENTICATION_ERROR);
+  }
+
+  return hasUsername && hasPassword ? { username, password } : undefined;
+}
+
 function parseTimeBudgetMultiplier(value: string): number {
   const num = Number(value);
   if (isNaN(num) || num < 1) {
@@ -81,6 +98,14 @@ export function createCli(): Command {
     .addOption(new Option('--no-status-monitor', 'Disable requests monitoring on /status'))
     .version(packageJson.version || '?', '-v, --version', 'output the current version')
     .action(async (options) => {
+      let auth: CliOpts['auth'];
+      try {
+        auth = createAuthConfiguration(options.authUsername, options.authPassword);
+      } catch (error) {
+        consola.error(error instanceof Error ? error.message : PARTIAL_AUTHENTICATION_ERROR);
+        process.exit(1);
+      }
+
       if (!options.token.length && !options.tokens?.length) {
         consola.info(`${program.helpInformation()}`);
         consola.error(`Arguments missing ("--token" or "--tokens" is mandatory).\n\n`);
@@ -102,13 +127,7 @@ export function createCli(): Command {
         minRemaining: options.minRemaining,
         timeBudgetMultiplier: options.timeBudgetMultiplier,
         statusMonitor: options.statusMonitor,
-        auth:
-          options.authUsername && options.authPassword
-            ? {
-                username: options.authUsername,
-                password: options.authPassword
-              }
-            : undefined
+        auth
       };
 
       const app = createProxyServer(appOptions);
