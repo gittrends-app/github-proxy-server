@@ -22,6 +22,24 @@ import {
 } from './router.js';
 import { concatTokens, parseTokens, readTokensFile } from './server.js';
 
+type BooleanCliOptions = {
+  overrideAuthorization: boolean;
+  statusMonitor: boolean;
+};
+
+async function parseBooleanOptions(args: string[]): Promise<BooleanCliOptions> {
+  const program = createCli();
+  let options: BooleanCliOptions | undefined;
+  program.action((parsedOptions: BooleanCliOptions) => {
+    options = parsedOptions;
+  });
+
+  await program.parseAsync(['node', 'test', ...args]);
+
+  if (!options) throw new Error('CLI options were not parsed');
+  return options;
+}
+
 export type CliCmdResult = {
   code: number;
   error?: Error | null;
@@ -277,6 +295,21 @@ describe('createCli command structure', () => {
     const statusMonitorOption = program.options.find((opt) => opt.long === '--no-status-monitor');
     expect(statusMonitorOption).toBeDefined();
   });
+
+  test.each([
+    [[], true, true],
+    [['--no-override-authorization'], false, true],
+    [['--no-status-monitor'], true, false],
+    [['--no-override-authorization', '--no-status-monitor'], false, false]
+  ])(
+    'should parse boolean defaults and explicit negative values %#',
+    async (args, overrideAuthorization, statusMonitor) => {
+      await expect(parseBooleanOptions(args)).resolves.toMatchObject({
+        overrideAuthorization,
+        statusMonitor
+      });
+    }
+  );
 
   test('should have trusted external base URL option', () => {
     const externalBaseUrlOption = program.options.find((opt) => opt.long === '--external-base-url');
