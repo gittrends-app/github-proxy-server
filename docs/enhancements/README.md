@@ -2,7 +2,7 @@
 
 This dossier records the project-improvement recommendations from the prior analysis. It expands the
 earlier grouped analysis into 15 actionable work items, ordered from lowest to highest implementation
-risk. All recommendations are currently **planned** and none has been implemented by this dossier.
+risk. Recommendation 01 is **verified**; the remaining recommendations are currently **planned**.
 
 ## Project baseline
 

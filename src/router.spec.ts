@@ -266,6 +266,22 @@ describe('Middleware core', () => {
       await request(app).get('/').expect(200);
     });
 
+    test('it should redact invalid tokens from rate-limit errors', async () => {
+      const errors: string[] = [];
+      middleware.on('error', (error) => errors.push(error.toString()));
+
+      nock.cleanAll();
+      nock('https://api.github.com', { allowUnmocked: false })
+        .get('/rate_limit')
+        .times(4)
+        .reply(StatusCodes.UNAUTHORIZED);
+
+      await middleware.refreshRateLimits();
+
+      expect(errors.join('\n')).not.toContain(FAKE_TOKEN);
+      expect(errors.join('\n')).toContain(FAKE_TOKEN.slice(-4));
+    });
+
     test('it should not update limits when "x-ratelimit-remaining" is not on header', async () => {
       scope
         .defaultReplyHeaders({

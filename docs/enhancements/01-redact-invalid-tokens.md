@@ -1,13 +1,13 @@
 ---
 id: 01
 title: Redact invalid tokens from errors
-status: planned
+status: verified
 risk: very-low
 urgency: urgent
 scope: error reporting and token validation
 ---
 
-**Status:** Planned; not yet implemented.
+**Status:** Verified; implementation and validation complete.
 
 ## Problem
 
@@ -45,3 +45,15 @@ diagnostic redaction remains useful. Run the required project checks in the road
 - No invalid-token error contains the full token.
 - Existing error forwarding and invalid-token behavior remain intact.
 - Regression coverage and validation evidence are reported.
+
+## Verification evidence
+
+- `src/router.ts` now emits only the token's last four characters in the diagnostic while preserving
+  the full token as the event argument used for token removal.
+- `src/router.spec.ts` verifies that invalid-token errors omit the complete token and retain the
+  redacted suffix.
+- `npx vitest run src/router.spec.ts`: passed (16 tests).
+- `npm run lint`: passed.
+- `npx tsc --noEmit`: passed.
+- `npm test`: passed (111 tests).
+- `npm run build`: passed.

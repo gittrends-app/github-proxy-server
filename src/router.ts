@@ -223,7 +223,7 @@ class ProxyWorker extends EventEmitter {
       if (response.status === 401) {
         this.remaining = 0;
         this.reset = Number.POSITIVE_INFINITY;
-        this.emit('error', `Invalid token detected (${this.token}).`, this.token);
+        this.emit('error', `Invalid token detected (${this.token.slice(-4)}).`, this.token);
       } else {
         const res = (await response.json()) as {
           resources: Record<string, { remaining: number; reset: number }>;
