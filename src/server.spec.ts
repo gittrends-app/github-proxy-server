@@ -274,6 +274,17 @@ describe('Test proxy authentication', () => {
     await request(app).get('/').auth('testuser', 'wrongpass').expect(StatusCodes.UNAUTHORIZED);
   });
 
+  test.each(['Bearer not-basic', 'Basic not-base64'])(
+    'it should reject malformed authorization header %s',
+    async (authorization) => {
+      const app = createTestApp(params);
+      await request(app)
+        .get('/')
+        .set('Authorization', authorization)
+        .expect(StatusCodes.UNAUTHORIZED);
+    }
+  );
+
   test('it should return WWW-Authenticate header on unauthorized', async () => {
     const app = createTestApp(params);
     const response = await request(app).get('/').expect(StatusCodes.UNAUTHORIZED);

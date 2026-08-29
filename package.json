@@ -37,7 +37,7 @@
     "architecture.png"
   ],
   "dependencies": {
-    "basic-auth": "^2.0.1",
+    "basic-auth": "^3.0.0",
     "chalk": "6.0.0",
     "commander": "^15.0.0",
     "compression": "^1.8.1",

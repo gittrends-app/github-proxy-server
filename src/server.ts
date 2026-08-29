@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import basicAuth from 'basic-auth';
+import { parse as parseBasicAuth } from 'basic-auth';
 import chalk from 'chalk';
 import compression from 'compression';
 import dayjs from 'dayjs';
@@ -140,7 +140,9 @@ export function createProxyServer(options: CliOpts): ProxyServer {
     app.use((req: Request, res: Response, next) => {
       if (req.path === '/status' || req.path === '/status/') return next();
 
-      const credentials = basicAuth(req);
+      const credentials = req.headers.authorization
+        ? parseBasicAuth(req.headers.authorization)
+        : undefined;
 
       if (
         !credentials ||
