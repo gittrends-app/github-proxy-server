@@ -36,6 +36,27 @@ describe('Middleware constructor and methods', () => {
     expect(() => new Middleware([])).toThrowError();
   });
 
+  test.each([
+    ['requestTimeout', { requestTimeout: 0 }],
+    ['minRemaining', { minRemaining: -1 }],
+    ['timeBudgetMultiplier', { timeBudgetMultiplier: 11 }]
+  ])('it should reject invalid direct %s options', (_name, invalidOptions) => {
+    expect(() => new Middleware([FAKE_TOKEN], invalidOptions)).toThrow(`Invalid ${_name}`);
+  });
+
+  test('it should validate every token before allocating worker resources', () => {
+    const setInterval = vi.spyOn(globalThis, 'setInterval');
+
+    try {
+      expect(() => new Middleware([FAKE_TOKEN, 'invalid-token'])).toThrow(
+        'unsupported GitHub credential format'
+      );
+      expect(setInterval).not.toHaveBeenCalled();
+    } finally {
+      setInterval.mockRestore();
+    }
+  });
+
   test('it should remove/add tokens', async () => {
     const middleware = new Middleware([FAKE_TOKEN]);
     expect(middleware.tokens).toHaveLength(1);
@@ -325,7 +346,7 @@ describe('Middleware core', () => {
     test('it should balance the use of the tokens', async () => {
       scope.get('/').delay(250).reply(200);
 
-      const tokens = times<string>(5, (n) => `${FAKE_TOKEN}**${n}`)
+      const tokens = times<string>(5, (n) => `${repeat('t', 39)}${n}`)
         .concat(FAKE_TOKEN)
         .reduce((memo: Record<string, number>, token) => ({ ...memo, [token]: 0 }), {});
 

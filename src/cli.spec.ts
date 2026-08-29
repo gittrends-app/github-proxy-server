@@ -5,9 +5,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Command } from 'commander';
+import repeat from 'lodash/repeat.js';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import { createAuthConfiguration, createCli, PARTIAL_AUTHENTICATION_ERROR } from './cli.js';
+import {
+  parseMinRemaining,
+  parsePort,
+  parseRequestTimeout,
+  parseTimeBudgetMultiplier
+} from './router.js';
 import { concatTokens, parseTokens, readTokensFile } from './server.js';
 
 export type CliCmdResult = {
@@ -296,6 +303,29 @@ describe('CLI option parsing', () => {
   });
 });
 
+describe('Numeric configuration validation', () => {
+  test.each([
+    ['port', parsePort, 0, 65535],
+    ['requestTimeout', parseRequestTimeout, 1, 120000],
+    ['minRemaining', parseMinRemaining, 0, 5000],
+    ['timeBudgetMultiplier', parseTimeBudgetMultiplier, 1, 10]
+  ])('should accept %s boundaries', (_name, parse, minimum, maximum) => {
+    expect(parse(minimum)).toBe(minimum);
+    expect(parse(maximum)).toBe(maximum);
+  });
+
+  test.each([
+    ['port', parsePort, [-1, 65536, 1.5, '1e3', '']],
+    ['requestTimeout', parseRequestTimeout, [0, 120001, 1.5, 'Infinity', '']],
+    ['minRemaining', parseMinRemaining, [-1, 5001, 1.5, 'NaN', '']],
+    ['timeBudgetMultiplier', parseTimeBudgetMultiplier, [0, 10.1, 'Infinity', '1e2', '']]
+  ])('should reject invalid %s values', (name, parse, values) => {
+    for (const value of values) {
+      expect(() => parse(value)).toThrow(`Invalid ${name}`);
+    }
+  });
+});
+
 describe('CLI environment variables', () => {
   test('should support PORT environment variable', () => {
     const program = createCli();
@@ -342,6 +372,21 @@ describe('Helper Functions - concatTokens', () => {
     expect(result).toHaveLength(1);
   });
 
+  test('should accept supported prefixed GitHub credential formats', () => {
+    const credentials = [
+      `ghp_${repeat('a', 36)}`,
+      `gho_${repeat('b', 36)}`,
+      `ghu_${repeat('c', 36)}`,
+      `ghs_${repeat('d', 36)}`,
+      `ghr_${repeat('e', 36)}`,
+      `github_pat_${repeat('f', 82)}`
+    ];
+
+    expect(
+      credentials.reduce<string[]>((list, credential) => concatTokens(credential, list), [])
+    ).toEqual(credentials);
+  });
+
   test('should add valid token to existing list', () => {
     const token1 = '1234567890123456789012345678901234567890';
     const token2 = '0987654321098765432109876543210987654321';
@@ -369,6 +414,14 @@ describe('Helper Functions - concatTokens', () => {
 
   test('should throw error for empty token', () => {
     expect(() => concatTokens('', [])).toThrow('Invalid access token detected');
+  });
+
+  test('should reject unsupported credential formats without exposing them', () => {
+    const invalidToken = `github_pat_${repeat('secret', 20)}`;
+
+    expect(() => concatTokens(invalidToken, [])).toThrow(
+      expect.not.objectContaining({ message: expect.stringContaining(invalidToken) })
+    );
   });
 });
 

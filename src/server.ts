@@ -20,6 +20,8 @@ import { getBorderCharacters, table } from 'table';
 import ProxyRouter, {
   type ProxyRouterOpts,
   ProxyRouterResponse,
+  validateGitHubToken,
+  validateProxyRouterOptions,
   type WorkerLogger
 } from './router.js';
 
@@ -79,8 +81,7 @@ export function parseTokens(text: string): string[] {
 
 // concat tokens in commander
 export function concatTokens(token: string, list: string[]): string[] {
-  if (token.length !== 40)
-    throw new Error('Invalid access token detected (they have 40 characters)');
+  validateGitHubToken(token);
   return uniq([...list, token]);
 }
 
@@ -106,6 +107,8 @@ export type ProxyServer = Express & {
 };
 
 export function createProxyServer(options: CliOpts): ProxyServer {
+  validateProxyRouterOptions(options);
+
   const tokens = compact(options.tokens).reduce(
     (memo: string[], token: string) => concatTokens(token, memo),
     []

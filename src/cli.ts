@@ -12,6 +12,12 @@ import omit from 'lodash/omit.js';
 import omitBy from 'lodash/omitBy.js';
 
 import packageJson from '../package.json' with { type: 'json' };
+import {
+  parseMinRemaining,
+  parsePort,
+  parseRequestTimeout,
+  parseTimeBudgetMultiplier
+} from './router.js';
 import { type CliOpts, concatTokens, createProxyServer, readTokensFile } from './server.js';
 
 export const PARTIAL_AUTHENTICATION_ERROR =
@@ -31,21 +37,13 @@ export function createAuthConfiguration(
   return hasUsername && hasPassword ? { username, password } : undefined;
 }
 
-function parseTimeBudgetMultiplier(value: string): number {
-  const num = Number(value);
-  if (isNaN(num) || num < 1) {
-    throw new Error('Time budget multiplier must be >= 1.0 (use 1.0 for 100%, 1.5 for 150%, etc.)');
-  }
-  return num;
-}
-
 export function createCli(): Command {
   const program = new Command();
 
   return program
     .addOption(
       new Option('-p, --port [port]', 'Port to start the proxy server')
-        .argParser(Number)
+        .argParser(parsePort)
         .default(3000)
         .env('PORT')
     )
@@ -61,13 +59,13 @@ export function createCli(): Command {
     )
     .addOption(
       new Option('--request-timeout [timeout]', 'Request timeout (ms)')
-        .argParser(Number)
+        .argParser(parseRequestTimeout)
         .default(30000)
         .env('GPS_REQUEST_TIMEOUT')
     )
     .addOption(
       new Option('--min-remaining <number>', 'Stop using token on a minimum of')
-        .argParser(Number)
+        .argParser(parseMinRemaining)
         .default(100)
         .env('GPS_MIN_REMAINING')
     )
@@ -115,14 +113,18 @@ export function createCli(): Command {
         (memo: string[], token: string) => concatTokens(token, memo),
         []
       );
+      const port = parsePort(options.port);
+      const requestTimeout = parseRequestTimeout(options.requestTimeout);
+      const minRemaining = parseMinRemaining(options.minRemaining);
+      const timeBudgetMultiplier = parseTimeBudgetMultiplier(options.timeBudgetMultiplier);
 
       const appOptions: CliOpts = {
-        requestTimeout: options.requestTimeout,
+        requestTimeout,
         silent: options.silent,
         overrideAuthorization: options.overrideAuthorization,
         tokens: tokens,
-        minRemaining: options.minRemaining,
-        timeBudgetMultiplier: options.timeBudgetMultiplier,
+        minRemaining,
+        timeBudgetMultiplier,
         statusMonitor: options.statusMonitor,
         auth
       };
@@ -135,10 +137,10 @@ export function createCli(): Command {
         .on('error', consola.error);
 
       let startupReady = false;
-      const server = app.listen({ host: '0.0.0.0', port: options.port }, () => {
+      const server = app.listen({ host: '0.0.0.0', port }, () => {
         if (!server.listening) return;
         startupReady = true;
-        const host = `http://${ip.address()}:${options.port}`;
+        const host = `http://${ip.address()}:${port}`;
         consola.success(
           `Proxy server running on ${host} (tokens: ${chalk.greenBright(tokens.length)})`
         );

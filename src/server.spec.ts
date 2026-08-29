@@ -110,6 +110,14 @@ describe('Test create proxy server', () => {
     expect(() => createProxyServer(params)).toThrowError();
   });
 
+  test.each([
+    ['requestTimeout', { requestTimeout: 0 }],
+    ['minRemaining', { minRemaining: -1 }],
+    ['timeBudgetMultiplier', { timeBudgetMultiplier: Infinity }]
+  ])('it should validate direct %s configuration', (_name, invalidOptions) => {
+    expect(() => createProxyServer({ ...params, ...invalidOptions })).toThrow(`Invalid ${_name}`);
+  });
+
   test('it should expose an idempotent asynchronous app destroy method', async () => {
     const app = createTestApp(params);
     const destruction = app.destroy();

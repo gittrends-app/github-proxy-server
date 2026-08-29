@@ -22,6 +22,80 @@ type ExtendedRequest = Request & {
 
 type APIResources = 'core' | 'search' | 'code_search' | 'graphql';
 
+export const NUMERIC_CONFIGURATION_LIMITS = {
+  port: { min: 0, max: 65535 },
+  requestTimeout: { min: 1, max: 120000 },
+  minRemaining: { min: 0, max: 5000 },
+  timeBudgetMultiplier: { min: 1, max: 10 }
+} as const;
+
+function parseNumericConfiguration(
+  value: unknown,
+  name: keyof typeof NUMERIC_CONFIGURATION_LIMITS,
+  integer: boolean
+): number {
+  const limits = NUMERIC_CONFIGURATION_LIMITS[name];
+  const pattern = integer ? /^\+?\d+$/ : /^\+?(?:\d+(?:\.\d+)?|\.\d+)$/;
+  const number =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && pattern.test(value)
+        ? Number(value)
+        : Number.NaN;
+  const isValid =
+    Number.isFinite(number) &&
+    Math.abs(number) <= Number.MAX_SAFE_INTEGER &&
+    (!integer || Number.isInteger(number)) &&
+    number >= limits.min &&
+    number <= limits.max;
+
+  if (!isValid) {
+    const kind = integer ? 'a safe integer' : 'a finite safe number';
+    throw new Error(`Invalid ${name}: expected ${kind} between ${limits.min} and ${limits.max}.`);
+  }
+
+  return number;
+}
+
+export function parsePort(value: unknown): number {
+  return parseNumericConfiguration(value, 'port', true);
+}
+
+export function parseRequestTimeout(value: unknown): number {
+  return parseNumericConfiguration(value, 'requestTimeout', true);
+}
+
+export function parseMinRemaining(value: unknown): number {
+  return parseNumericConfiguration(value, 'minRemaining', true);
+}
+
+export function parseTimeBudgetMultiplier(value: unknown): number {
+  return parseNumericConfiguration(value, 'timeBudgetMultiplier', false);
+}
+
+export function validateProxyRouterOptions(options: ProxyRouterOpts): ProxyRouterOpts {
+  const requestTimeout = parseRequestTimeout(options.requestTimeout);
+  const minRemaining = parseMinRemaining(options.minRemaining);
+  const timeBudgetMultiplier =
+    options.timeBudgetMultiplier === undefined
+      ? undefined
+      : parseTimeBudgetMultiplier(options.timeBudgetMultiplier);
+
+  return { ...options, requestTimeout, minRemaining, timeBudgetMultiplier };
+}
+
+const GITHUB_TOKEN_PATTERNS = [
+  /^[A-Za-z0-9]{40}$/,
+  /^gh[opusr]_[A-Za-z0-9]{36}$/,
+  /^github_pat_[A-Za-z0-9_]{82}$/
+];
+
+export function validateGitHubToken(token: unknown): asserts token is string {
+  if (typeof token !== 'string' || !GITHUB_TOKEN_PATTERNS.some((pattern) => pattern.test(token))) {
+    throw new Error('Invalid access token detected (unsupported GitHub credential format).');
+  }
+}
+
 type ScheduledRequest = QueuedRequest & {
   settle: () => void;
 };
@@ -476,9 +550,12 @@ export default class ProxyRouter extends EventEmitter {
     super({});
 
     if (!tokens.length) throw new Error('At least one token is required!');
+    tokens.forEach((token) => validateGitHubToken(token));
 
     this.clients = [];
-    this.options = Object.assign({ requestTimeout: 20000, minRemaining: 100 }, opts);
+    this.options = validateProxyRouterOptions(
+      Object.assign({ requestTimeout: 20000, minRemaining: 100 }, opts)
+    );
 
     // Initialize per-resource queues
     this.queues = {
@@ -518,6 +595,7 @@ export default class ProxyRouter extends EventEmitter {
 
   addToken(token: string): void {
     if (this.destroyed) return;
+    validateGitHubToken(token);
     if (this.clients.map((client) => client.token).includes(token)) return;
 
     const core = new ProxyWorker(token, { ...this.options, resource: 'core' });

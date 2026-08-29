@@ -1,13 +1,13 @@
 ---
 id: 08
 title: Validate numeric and token configuration at startup
-status: planned
+status: verified
 risk: moderate
 urgency: normal
 scope: CLI option parsing and credential validation
 ---
 
-**Status:** Planned; not yet implemented.
+**Status:** Verified; review and final validation are complete.
 
 ## Problem
 
@@ -37,6 +37,13 @@ ranges and defaults for port, timeout, minimum remaining requests, and multiplie
 Introduce explicit parsers/validators with clear option-specific errors. Keep secrets out of error
 messages and preserve the selected credential-format policy in operator documentation.
 
+The supported numeric ranges are port `0..65535`, request timeout `1..120000` milliseconds, minimum
+remaining `0..5000`, and time-budget multiplier `1..10`. Integer settings must be safe integers;
+the multiplier also accepts finite decimal values. Supported credentials are legacy 40-character
+alphanumeric credentials, `ghp_`, `gho_`, `ghu_`, `ghs_`, and `ghr_` credentials with 36-character
+alphanumeric suffixes, and `github_pat_` credentials with an 82-character alphanumeric/underscore
+suffix.
+
 ## Validation plan
 
 Test invalid and boundary values for every numeric option, supported token formats, duplicates, and
@@ -47,3 +54,13 @@ startup failure behavior. Run normal startup tests with default values.
 - All numeric configuration has finite, bounded validation.
 - Supported token formats are explicitly defined and validated.
 - Startup errors are safe, clear, tested, and reported.
+
+## Implementation evidence
+
+- `src/router.ts` provides shared numeric and credential validators for direct router configuration.
+- `src/cli.ts` applies option-specific parsers to flags and environment-backed values.
+- `src/server.ts` validates direct server options and delegates credential validation consistently.
+- `src/cli.spec.ts` and `src/server.spec.ts` cover numeric boundaries, malformed values, credential
+  formats, duplicates, and startup validation failures.
+- Final validation: focused CLI/server/router tests (119 passed), full test suite (146 passed), Yarn
+  lint, TypeScript, and production build passed.
