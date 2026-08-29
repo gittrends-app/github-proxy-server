@@ -426,14 +426,12 @@ describe('External base URL validation', () => {
     expect(parseExternalBaseUrl(undefined)).toBeUndefined();
   });
 
-  test.each([
-    'ftp://proxy.example',
-    '//proxy.example',
-    'not-a-url',
-    'https://proxy.example/?x=1'
-  ])('should reject invalid external base URL %s', (value) => {
-    expect(() => parseExternalBaseUrl(value)).toThrow('Invalid externalBaseUrl');
-  });
+  test.each(['ftp://proxy.example', '//proxy.example', 'not-a-url', 'https://proxy.example/?x=1'])(
+    'should reject invalid external base URL %s',
+    (value) => {
+      expect(() => parseExternalBaseUrl(value)).toThrow('Invalid externalBaseUrl');
+    }
+  );
 });
 
 describe('Helper Functions - concatTokens', () => {
