@@ -113,6 +113,12 @@ When the proxy is deployed behind a trusted public URL, set `--external-base-url
 rewritten to that base; if it is omitted, upstream links are preserved unchanged and the untrusted
 inbound `Host` header is never used for external URLs.
 
+**PyGithub limitation:** The proxy preserves response bodies unchanged. PyGithub clients configured
+with a custom `base_url` may therefore fail when paginating because GitHub API URLs embedded in
+JSON responses still point to `api.github.com` ([Issue #18](https://github.com/gittrends-app/github-proxy-server/issues/18)).
+This behavior is intentional for transparent proxying; see the [PyGithub sample](samples/pygithub/README.md)
+for a smoke test.
+
 Request bodies are limited to 1 MiB by default and can be configured with
 `--max-request-body-bytes` or `GPS_MAX_REQUEST_BODY_BYTES` (1–16 MiB). Each live worker contributes
 50 queue slots by default; configure this with `--max-queue-depth` or `GPS_MAX_QUEUE_DEPTH`.
