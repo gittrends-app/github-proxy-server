@@ -483,6 +483,7 @@ class ProxyWorker extends EventEmitter {
     this.agent = new Agent({
       connections: 20,
       pipelining: 1,
+      allowH2: false,
       keepAliveTimeout: 60000,
       keepAliveMaxTimeout: 600000,
       headersTimeout: opts.requestTimeout,
