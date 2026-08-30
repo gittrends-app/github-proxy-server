@@ -546,6 +546,7 @@ describe('ProxyClient', () => {
     test('should remove drain listeners when backpressure is cancelled', async () => {
       const controller = new AbortController();
       let drain!: () => void;
+      const drainEmitter = new EventEmitter();
       const read = vi
         .fn()
         .mockResolvedValueOnce({ done: false, value: new Uint8Array([1]) })
@@ -563,8 +564,11 @@ describe('ProxyClient', () => {
       const { req, res } = createMockRequestResponse('GET', '/backpressure-cancel');
       const removeListener = vi.fn();
       res.write = vi.fn(() => false);
-      res.once = vi.fn((event: string, callback: () => void) => {
-        if (event === 'drain') drain = callback;
+      res.on = vi.fn((event: string, callback: () => void) => {
+        if (event === 'drain') {
+          drain = callback;
+          return drainEmitter.on(event, callback) as unknown as ServerResponse;
+        }
         return res;
       });
       res.removeListener = removeListener;
@@ -576,10 +580,57 @@ describe('ProxyClient', () => {
 
         await expect(proxy).rejects.toMatchObject({ code: 'ETIMEDOUT' });
         expect(res.writableFinished).toBe(false);
-        expect(removeListener).toHaveBeenCalledWith('drain', drain);
+        expect(drainEmitter.listenerCount('drain')).toBe(0);
+        expect(removeListener).not.toHaveBeenCalledWith('drain', drain);
         expect(removeListener).toHaveBeenCalledWith('close', expect.any(Function));
         expect(cancel).toHaveBeenCalled();
         expect(releaseLock).toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    });
+
+    test('should remove redirected drain listeners after repeated backpressure cycles', async () => {
+      const drainEmitter = new EventEmitter();
+      const cycles = 11;
+      const read = vi.fn();
+      for (let index = 0; index < cycles; index++) {
+        read.mockResolvedValueOnce({ done: false, value: new Uint8Array([index]) });
+      }
+      read.mockResolvedValueOnce({ done: true, value: undefined });
+
+      const fetch = vi.mocked(undiciFetch).mockResolvedValue({
+        status: StatusCodes.OK,
+        statusText: 'OK',
+        headers: new Headers(),
+        body: {
+          getReader: () => ({
+            read,
+            cancel: vi.fn().mockResolvedValue(undefined),
+            releaseLock: vi.fn()
+          })
+        }
+      } as unknown as UndiciResponse);
+      const { req, res } = createMockRequestResponse('GET', '/repeated-backpressure');
+      res.write = vi.fn(() => false);
+      res.on = vi.fn((event: string, callback: () => void) => {
+        if (event === 'drain') {
+          return drainEmitter.on(event, callback) as unknown as ServerResponse;
+        }
+        return res;
+      });
+
+      try {
+        const proxy = client.proxy(req, res);
+        for (let index = 0; index < cycles; index++) {
+          await vi.waitFor(() => expect(drainEmitter.listenerCount('drain')).toBe(1));
+          expect(drainEmitter.listenerCount('drain')).toBe(1);
+          drainEmitter.emit('drain');
+          expect(drainEmitter.listenerCount('drain')).toBe(0);
+        }
+
+        await proxy;
+        expect(drainEmitter.listenerCount('drain')).toBe(0);
       } finally {
         fetch.mockRestore();
       }
@@ -808,12 +859,13 @@ function createMockRequestResponse(
     end: vi.fn(() => {
       finished = true;
     }),
-    once: vi.fn((event: string, callback: () => void) => {
+    on: vi.fn((event: string, callback: () => void) => {
       if (event === 'drain') {
         setImmediate(callback);
       }
       return res;
     }),
+    once: vi.fn(() => res),
     destroy: vi.fn()
   } as unknown as ServerResponse;
 

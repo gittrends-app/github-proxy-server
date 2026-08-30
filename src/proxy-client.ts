@@ -1,10 +1,13 @@
 /* Author: Hudson S. Borges */
+import type EventEmitter from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { type Dispatcher, fetch as undiciFetch } from 'undici';
 
 export type ProxyHeaderValue = string | string[];
 export type ProxyResponseHeaders = Record<string, ProxyHeaderValue>;
+
+type EventEmitterLike = Pick<EventEmitter, 'on' | 'removeListener'>;
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -341,8 +344,9 @@ export class ProxyClient {
 
   private waitForDrain(res: ServerResponse, signal: AbortSignal): Promise<boolean> {
     return new Promise((resolve, reject) => {
+      let drainEmitter: EventEmitterLike | undefined;
       const cleanup = (): void => {
-        res.removeListener?.('drain', onDrain);
+        drainEmitter?.removeListener('drain', onDrain);
         res.removeListener?.('close', onClose);
         signal.removeEventListener('abort', onAbort);
       };
@@ -369,7 +373,7 @@ export class ProxyClient {
         return;
       }
 
-      res.once('drain', onDrain);
+      drainEmitter = res.on('drain', onDrain);
       res.once('close', onClose);
       signal.addEventListener('abort', onAbort, { once: true });
     });
